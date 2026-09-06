@@ -1,96 +1,143 @@
-# CrossSlate MVP
+# CrossSlate — a reading dashboard for the XTEink X4
 
-CrossSlate es un firmware de productividad ligero para **Xteink X4**, evolucionado desde MicroSlate. Conserva el editor de notas y el teclado BLE y añade una pantalla de inicio con información local desde MicroSD.
+**CrossSlate** is a second firmware (dual boot) for the **XTEink X4** e-reader that turns it into an e-ink dashboard: weather, tasks, pinned notes, hand-drawn doodles sent from your browser, a reading heatmap, a pomodoro timer, and a pet named **Crossi** that grows with your reading habits.
 
-## Alcance del MVP
+It lives in the second OTA slot of the X4 alongside **CrossInk** (the reader firmware), and both share the same SD card.
 
-- Rebranding visible a **CrossSlate** y Dashboard como pantalla inicial.
-- Dashboard con fecha/hora del sistema, batería, clima cacheado, hasta 5 próximas tareas y una nota fijada.
-- Notas `.txt` en `/notes/`: crear, abrir, renombrar, borrar, editar y autosalvar.
-- Teclado BLE HID y gestión de hasta 4 teclados emparejados.
-- Sync WiFi de solo lectura para copia de notas al PC.
-- Arbitraje de radio: al iniciar WiFi se detienen el escaneo/reconexión BLE y se desconecta el teclado; BLE vuelve a reconectar al apagar WiFi. No se mantienen BLE y WiFi activos simultáneamente.
-- Retorno opcional a CrossInk: **Volver a CrossInk** solo aparece si el slot OTA alterno contiene cabeceras de imagen y aplicación válidas.
+> ⚠️ **Tested only on the XTEink X4.** Community reports suggest the X3 hardware is firmware-compatible, but rendering on its screen (528×792 vs 480×800) is unverified. Use on X3 at your own risk.
 
-## Dashboard y formatos SD
+---
 
-CrossSlate crea `/crossslate` si no existe y lee los siguientes ficheros pequeños:
+## Credits
 
-### `/crossslate/weather.json`
+This project **would not exist without**:
 
-```json
-{"temperature_c":21.5,"summary":"Soleado","updated":"2026-09-01 09:30","icon":0}
-```
+- **CrossInk** — [github.com/uxjulia/crossink](https://github.com/uxjulia/crossink) and the CrossPoint Reader ecosystem ([crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)), the source of the SDK, the reader, and the web server. CrossSlate reuses its web server, its SD updater, and its reading-stats file format.
+- **MicroSlate** — [github.com/Josh-writes/microslate-firmware](https://github.com/Josh-writes/microslate-firmware), the source of the BLE keyboard bridge, note writing, and the dual-boot idea.
+- The XTEink X4/X3 community (see [Ecosystem](#ecosystem)) for inspiration and reference implementations.
 
-Límites: fichero leído hasta 511 bytes; `summary` 47 bytes; `updated` 31 bytes. El Dashboard intenta actualizar automáticamente el clima fijo de Madrid (Open-Meteo HTTPS, sin API key) al arrancar y con **R**. Usa solo credenciales guardadas en NVS; si falla, conserva la caché. `icon` es opcional y va de 0 a 7.
+CrossSlate is a fork derived from **multiple X4 projects**. All credit for the foundations belongs to the original authors; the added bugs are ours. 😄
 
-### `/crossslate/tasks.txt`
+---
 
-Una tarea no vacía por línea. Se muestran como máximo 5 tareas; cada una se trunca a 79 bytes. El fichero leído está limitado a 511 bytes.
+## Features
 
-```text
-Preparar reunión
-Revisar borrador
-Comprar pilas
-```
+### Main page (Dashboard)
+- **Open-Meteo weather** with selectable city (11 cities), manual refresh via the right button
+- **Upcoming tasks** (up to 5 × 80 chars)
+- **Pinned note** (35 chars)
+- **Doodle**: draw with your mouse or finger in the browser, with 8 hand-drawn style frames
 
-### `/crossslate/pinned.txt`
+### "Utilities" page
+- **GitHub-style reading heatmap** (14 weeks × 7 days) fed by CrossInk's real reading stats (`/.crosspoint/global_stats.bin`)
+- Current streak and record
+- **Integrated pomodoro** (1–90 min) that survives deep sleep, with a giant 7-segment countdown on the sleep screen
+- **Crossi** 🧡, the pet: happy if you read today, asleep if you missed 2 days, with random accessories (bow, top hat, Santa hat in December)
 
-La primera línea no vacía se muestra como nota fijada, truncada a 159 bytes. El fichero leído está limitado a 191 bytes.
+### Web server (from CrossInk)
+- **CrossSlate tab** to edit tasks and the pinned note, and draw doodles from your Mac or phone browser
 
-## Fecha y hora
+### Also
+- Sleep screen with random BMP wallpapers from `/sleep` (shared with CrossInk) or the pomodoro countdown
+- Wi-Fi credential import/merge from CrossInk
+- BLE keyboard for writing notes (inherited from MicroSlate)
+- SD updater: each firmware flashes the opposite slot from a `.bin` on the card
 
-La hora se sincroniza por NTP cuando se completa una conexión de Sync WiFi, usando la zona CET/CEST. Hasta que exista una hora válida, el Dashboard muestra `Fecha/hora no sincronizada`. El X4 no mantiene necesariamente hora fiable tras pérdida total de alimentación.
+---
 
-## Escrituras seguras de notas
+## Installation
 
-El guardado usa `/notes/<nombre>.txt.tmp`, verifica los bytes escritos, rota el original a `.bak`, promociona el `.tmp` y verifica el tamaño final. Cada operación crítica (`remove`, `rename`, lectura/escritura de `otadata`) comprueba su resultado. Al arrancar:
+### Option A — dual image from scratch (recommended for a fresh start)
 
-1. si existe el original, se descarta un `.tmp` huérfano;
-2. si falta el original y existe `.bak`, se restaura primero `.bak`;
-3. si solo existe `.tmp`, se promociona como recuperación de último recurso.
+Flashes **both firmwares at once** over a blank X4 or any previous firmware.
 
-Un error mantiene el indicador de cambios sin guardar.
-
-## Cambio de arranque OTA
-
-`src/ota_boot_switch.cpp` valida el slot alterno sin depender de `esp_image_verify` (incompatible con ciertas imágenes Xteink parcheadas): comprueba tipo/subtipo, cabecera de imagen, número de segmentos y `esp_app_desc_t`. Para cambiar de app:
-
-- valida la partición de destino de nuevo;
-- lee y valida las dos copias de `otadata` por secuencia, estado y CRC;
-- borra y escribe únicamente la copia inactiva;
-- relee y compara byte a byte antes de reiniciar.
-
-El módulo está implementado localmente para CrossSlate; no copia HAL ni renderers de CrossInk.
-
-## Compilar
-
-Requiere PlatformIO:
+1. Copy `firmware/crossink-crossslate-dual-16MB-v33.bin` somewhere accessible
+2. Flash over USB with esptool **at offset 0x0**:
 
 ```bash
-pio run -e xteink_x4
+esptool.py --chip esp32c3 --port /dev/ttyUSB0 --baud 460800 \
+  write_flash 0x0 crossink-crossslate-dual-16MB-v33.bin
 ```
 
-No es necesario ni se incluye ningún binario opaco de TypeSlate. Este repositorio contiene el código fuente y las librerías necesarias; PlatformIO descarga `esp-nimble-cpp` como dependencia declarada.
+> ⚠️ This image targets X4 units with 16 MB flash. Verify your hardware first.
 
-## Controles principales
+3. On first boot you will have CrossInk in slot 1 and CrossSlate in slot 2.
 
-- Dashboard: **Enter** abre el menú; **Esc/Back** recarga los datos de SD.
-- Menú: flechas para navegar, **Enter** para seleccionar.
-- Editor: flechas, Home/End, Backspace/Delete; `Ctrl+S` guarda; `Ctrl+N` cambia título; `Ctrl+Z` modo limpio; `Tab` cambia modo de escritura; Esc guarda y vuelve.
-- Pulsación larga de Power: guarda y entra en deep sleep.
+### Option B — update a single slot (daily method)
 
-## Límites pendientes
+**The golden rule of dual boot:**
 
-- Actualización de clima por HTTPS/Open-Meteo: aplazada para no añadir TLS, configuración de ubicación y presión de RAM al MVP. La actualización manual actual consiste en recargar la caché SD.
-- Teclado español: el mapeo HID actual es US. Acentos, `ñ`, AltGr y dead keys requieren composición UTF-8 y cambios de cursor/borrado conscientes de puntos de código; no se incluyeron para no arriesgar el editor existente.
-- No hay editor en el dispositivo para tareas, clima o nota fijada; se gestionan como ficheros pequeños en la SD.
-- La detección del slot alterno valida estructura de imagen, no firma criptográfica.
-- No se flashea hardware como parte del build.
+> The SD updater **always writes the opposite slot** from the running firmware, then **reboots into that other slot**.
 
-## Estructura nueva relevante
+- To update **CrossInk**: copy its `.bin` to the SD, boot into **CrossSlate** → Settings → System → SD Update
+- To update **CrossSlate**: copy its `.bin` to the SD, boot into **CrossInk** → Settings → System → SD Update
 
-- `src/dashboard.{h,cpp}`: carga fija desde SD.
-- `src/dashboard_parser.{h,cpp}`: parser acotado sin `String` dinámicas.
-- `src/ota_boot_switch.{h,cpp}`: validación y escritura verificada de `otadata`.
-- `test/test_dashboard_parser.cpp`: prueba host de clima, tareas y nota fijada.
+You can never end up half-flashed: the running slot never overwrites itself.
+
+### Files in this release
+
+| File | What it is |
+|---|---|
+| `CrossInk-X4-v13-landscape-doodle.bin` | CrossInk with the CrossSlate tab in its web server (tasks + note + doodle with frames) |
+| `CrossSlate-X4-v33-final.bin` | Full CrossSlate: dashboard, weather, heatmap, pomodoro, Crossi |
+| `crossink-crossslate-dual-16MB-v33.bin` | Both together, complete 16 MB image for from-scratch flashing |
+
+---
+
+## Usage
+
+### Dashboard
+- **Right button**: refresh the weather
+- **Enter**: main menu
+- **Esc (Back)**: reload data from the SD
+
+### Utilities
+- **Enter**: start/pause the pomodoro
+- **Side buttons up/down**: ±1 minute of duration
+- **Hold right button 2 s**: reset the pomodoro
+- **Esc / Back**: back to the menu
+
+### Web server (from CrossInk)
+1. Enable the X4 access point or Wi-Fi
+2. Open `http://<x4-ip>/crossslate`
+3. Edit tasks and the pinned note, draw a doodle, pick a frame, press **Send to X4**
+4. In CrossSlate press Confirm to reload the SD and see the changes
+
+---
+
+## How it works inside
+
+```
+Mac/phone (browser)
+   │  http://x4/crossslate → tasks, note, canvas
+   ▼
+CrossInk (slot 1, web server)
+   │  writes /crossslate/*.txt, *.bmp to the SD (atomic: .tmp → .bak → rename)
+   ▼
+Shared SD ◄──── also reads: cached weather, sleep wallpapers, global_stats.bin
+   │
+CrossSlate (slot 2, dashboard)
+      reads the SD on boot / reload and paints it in ink
+```
+
+- **The SD card is the shared memory.** Neither firmware writes into the other's slot.
+- **The heatmap captures nothing**: it reads the stats file CrossInk already maintains (730 days of history, 1 bit per day).
+- **Crossi feeds on those same bits**: if you read, Crossi smiles.
+- Doodles are rasterized to a **1-bit monochrome BMP in the browser**; the X4 only receives ready-to-paint bytes.
+
+---
+
+## Ecosystem
+
+This firmware exists thanks to the XTEink X4/X3 community. Projects that inspired features or answered questions: [Habitink](https://github.com/mohitagw15856/Habitink) (streak grid), [InkStorm-Solo](https://github.com/SkyWalker541/InkStorm-Solo) (extended Open-Meteo), [CrossLuaReader](https://github.com/dcherrera/CrossLuaReader) (pomodoro), [crosspoint-reader-lockscreens](https://github.com/t0nyz0/crosspoint-reader-lockscreens) (sleep dashboards), and CrossPoint's [ClippingStore](https://github.com/crosspoint-reader/crosspoint-reader) (atomic write pattern). Full 40+ project report in the repo.
+
+## Licenses and notes
+
+- Respect the licenses of the base projects (CrossInk/CrossPoint and MicroSlate).
+- **No** AGPL code was included (e.g. `crosspoint-chinesetype`).
+- AliExpress X4 units may have USB flashing locked: always use the SD updater.
+- The hardware clock (RTC) is on the X3, not the X4: time comes from NTP over Wi-Fi.
+
+## Screenshots
+
+See the [`screenshots/`](screenshots/) folder — dashboard, heatmap, pomodoro, Crossi, and the original concept sketches.

@@ -1,0 +1,40 @@
+{
+  "artifacts": {
+    "boot_app0": {
+      "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0",
+      "size": 8192
+    },
+    "bootloader": {
+      "sha256": "dcbe9482d80d6d3c6b5e7f31eb043217ba23389a081280731bda5d626a4b4e2a",
+      "size": 20096
+    },
+    "crossink": {
+      "sha256": "c49917e435edcc0d0445de1bc7296818b3fce6b8430b24e3c8e918be32749efc",
+      "size": 6275888
+    },
+    "crossslate": {
+      "sha256": "3d49ee247119a3c0645ef61d58cba899e3db1ebe90977fc8c9766b891f2418e7",
+      "size": 1848352
+    },
+    "merged": {
+      "sha256": "67c505f3f68dd6587cb8cf4672d24c49bff0e69178dff3763080de5299cec7cd",
+      "size": 8467488
+    },
+    "partitions": {
+      "sha256": "bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce",
+      "size": 3072
+    }
+  },
+  "flash_size": 16777216,
+  "format": "crossslate-dual-v1",
+  "partition_layout": {
+    "crossink": {
+      "offset": 65536,
+      "slot_size": 6553600
+    },
+    "crossslate": {
+      "offset": 6619136,
+      "slot_size": 6553600
+    }
+  }
+}
