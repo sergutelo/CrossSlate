@@ -4,7 +4,7 @@
 
 It lives in the second OTA slot of the X4 alongside **CrossInk** (the reader firmware), and both share the same SD card.
 
-> ⚠️ **Tested only on the XTEink X4.** Community reports suggest the X3 hardware is firmware-compatible, but rendering on its screen (528×792 vs 480×800) is unverified. Use on X3 at your own risk.
+> ⚠️ **Use at your own risk.** This is a personal hobby firmware, flashed at your own discretion. It is **tested only on the XTEink X4**; Community reports suggest the X3 hardware is firmware-compatible, but rendering on its screen (528×792 vs 480×800) is unverified. Use on X3 at your own risk.
 
 ---
 
