@@ -1,0 +1,1869 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3f1be60..4bcfe20 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -19,6 +19,8 @@
+ - EPUB inline-image pages on X3 now use the grayscale-aware display base before the image grayscale overlay, reducing the moment where images appear too dark before settling.
+ - EPUB publisher small-caps styling now renders ASCII lowercase text as smaller capital letters without needing extra font files.
+ - When incremental EPUB indexing runs out of memory at the first unindexed page, the reader now silently restarts once and resumes the book with a fresh heap.
++- Settings shows an Open CrossSlate action when the alternate OTA slot contains a plausible app image for ESP32-C3.
++- The web portal has a new CrossSlate page for editing CrossSlate's dashboard tasks and pinned note, which live in a shared SD-card folder the other firmware reads.
+ 
+ ### Changed
+ 
+diff --git a/lib/I18n/translations/english.yaml b/lib/I18n/translations/english.yaml
+index 1b5c1eb..977fadc 100644
+--- a/lib/I18n/translations/english.yaml
++++ b/lib/I18n/translations/english.yaml
+@@ -732,6 +732,8 @@ STR_EPUB_LAYOUT_MEMORY_READING_AIDS_HINT_GUIDE: "Try again with Guide Dots off."
+ STR_EPUB_FALLBACK_FONT_TITLE: "Chapter using built-in font"
+ STR_EPUB_FALLBACK_FONT_BODY: "Available memory was too low to lay out this chapter with the SD-card font, so it was loaded with the built-in font."
+ STR_SD_FIRMWARE_UPDATE: "SD Card Firmware Update"
++STR_OPEN_CROSSSLATE: "Open CrossSlate"
++STR_OPEN_CROSSSLATE_CONFIRM: "The device will restart into CrossSlate."
+ STR_SELECT_FIRMWARE_FILE: "Select firmware file (.bin)"
+ STR_NO_BIN_FILES: "No .bin files found"
+ STR_VALIDATING_FIRMWARE: "Validating firmware..."
+diff --git a/lib/I18n/translations/spanish.yaml b/lib/I18n/translations/spanish.yaml
+index d06dbca..fe23333 100644
+--- a/lib/I18n/translations/spanish.yaml
++++ b/lib/I18n/translations/spanish.yaml
+@@ -620,6 +620,8 @@ STR_EPUB_LAYOUT_MEMORY_READING_AIDS_HINT_GUIDE: "Intente de nuevo con Puntos gu
+ STR_EPUB_FALLBACK_FONT_TITLE: "El capítulo usa la tipografía integrada"
+ STR_EPUB_FALLBACK_FONT_BODY: "La memoria disponible era demasiado baja para procesar este capítulo con la tipografía de la tarjeta SD, así que se cargó con la tipografía integrada."
+ STR_SD_FIRMWARE_UPDATE: "Actualizar firmware por tarjeta SD"
++STR_OPEN_CROSSSLATE: "Abrir CrossSlate"
++STR_OPEN_CROSSSLATE_CONFIRM: "El dispositivo se reiniciará en CrossSlate."
+ STR_SELECT_FIRMWARE_FILE: "Elija el archivo de firmware (.bin)"
+ STR_NO_BIN_FILES: "No se encontraron archivos .bin"
+ STR_VALIDATING_FIRMWARE: "Validando el firmware..."
+diff --git a/scripts/build_web.py b/scripts/build_web.py
+index 1241210..0155273 100644
+--- a/scripts/build_web.py
++++ b/scripts/build_web.py
+@@ -30,6 +30,7 @@ PAGES = {
+     "files":    ("FilesPageHtml",    "Files - CrossInk",           "files",    '  <script src="/js/jszip.min.js"></script>'),
+     "settings": ("SettingsPageHtml", "Settings - CrossInk Reader", "settings", ""),
+     "fonts":    ("FontsPageHtml",    "Fonts - CrossInk",           "fonts",    ""),
++    "crossslate": ("CrossSlatePageHtml", "CrossSlate - CrossInk",  "crossslate", ""),
+ }
+ 
+ PRESERVE_TAGS = "pre|code|textarea|script|style"
+@@ -98,6 +99,7 @@ for slug, (ident, title, active, head_extra) in PAGES.items():
+         "title": title, "v": v, "head_extra": head_extra,
+         "styles": page_css, "body": page_html, "script": script,
+         "cls_home": "", "cls_files": "", "cls_settings": "", "cls_fonts": "",
++        "cls_crossslate": "",
+     }
+     values[f"cls_{active}"] = ' class="active"'
+     html = minify_html(render(base, values))
+diff --git a/src/SettingsList.h b/src/SettingsList.h
+index 4c74801..9493745 100644
+--- a/src/SettingsList.h
++++ b/src/SettingsList.h
+@@ -1149,9 +1149,10 @@ inline std::vector<SettingInfo> buildDisplaySleepSettingsList(const std::vector<
+   return sleepSettings;
+ }
+ 
+-inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<SettingInfo>& allSettings) {
++inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<SettingInfo>& allSettings,
++                                                              const bool includeCrossSlate) {
+   std::vector<SettingInfo> systemSettings;
+-  systemSettings.reserve(8);
++  systemSettings.reserve(includeCrossSlate ? 9 : 8);
+   systemSettings.push_back(SettingInfo::Submenu(StrId::STR_SYSTEM_DEVICE, SettingAction::SystemDevice));
+   systemSettings.push_back(SettingInfo::Submenu(StrId::STR_SYSTEM_FILES_CACHE, SettingAction::SystemFilesCache));
+   systemSettings.push_back(SettingInfo::Submenu(StrId::STR_READING_STATS, SettingAction::SystemReadingStats));
+@@ -1160,6 +1161,9 @@ inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<
+   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
+   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
++  if (includeCrossSlate) {
++    systemSettings.push_back(SettingInfo::Action(StrId::STR_OPEN_CROSSSLATE, SettingAction::OpenCrossSlate));
++  }
+   return systemSettings;
+ }
+ 
+diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
+index 4e1432d..bf2cb29 100644
+--- a/src/activities/home/HomeActivity.cpp
++++ b/src/activities/home/HomeActivity.cpp
+@@ -23,11 +23,14 @@
+ #include "../reader/BookReadingStats.h"
+ #include "../reader/BookStatsActivity.h"
+ #include "../reader/EpubReaderUtils.h"
++#include "../util/ConfirmationActivity.h"
+ #include "BookmarkStore.h"
+ #include "ClippingStore.h"
+ #include "CrossPointSettings.h"
+ #include "CrossPointState.h"
++#include "Memory.h"
+ #include "MappedInputManager.h"
++#include "network/OtaBootSwitch.h"
+ #include "OpdsServerStore.h"
+ #include "RecentBookProgress.h"
+ #include "RecentBooksStore.h"
+@@ -42,7 +45,7 @@ namespace {
+ constexpr uint32_t CAROUSEL_CACHE_MAGIC = 0x43434152;  // "CCAR"
+ // Cached frames include all Home visuals, including the menu icons. Bump this
+ // whenever their rendering changes so stale snapshots are rebuilt after OTA.
+-constexpr uint16_t CAROUSEL_CACHE_VERSION = 5;
++constexpr uint16_t CAROUSEL_CACHE_VERSION = 6;
+ constexpr char CAROUSEL_CACHE_PATH[] = "/.crosspoint/home_carousel_cache.bin";
+ constexpr char CAROUSEL_CACHE_TMP_PATH[] = "/.crosspoint/home_carousel_cache.tmp";
+ constexpr uint32_t CAROUSEL_FRAME_MIN_FREE_AFTER_ALLOC = 64U * 1024U;
+@@ -59,6 +62,7 @@ enum class HomeMenuAction {
+   Bookmarks,
+   FileTransfer,
+   Settings,
++  OpenCrossSlate,
+ };
+ 
+ struct HomeMenuEntry {
+@@ -68,7 +72,7 @@ struct HomeMenuEntry {
+ };
+ 
+ struct HomeMenuEntries {
+-  static constexpr int kCapacity = 8;
++  static constexpr int kCapacity = 9;
+   std::array<HomeMenuEntry, kCapacity> entries{};
+   int count = 0;
+ 
+@@ -260,7 +264,7 @@ const char* savedItemsLabel(bool hasBookmarks, bool hasClippings) {
+ }
+ 
+ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks,
+-                         bool hasClippings) {
++                         bool hasClippings, bool hasCrossSlate) {
+   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
+   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
+ 
+@@ -275,16 +279,21 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
+   }
+ 
+   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
++  if (hasCrossSlate) {
++    items.push({tr(STR_OPEN_CROSSSLATE), Settings, HomeMenuAction::OpenCrossSlate});
++  }
+   items.push({tr(STR_SETTINGS_TITLE), Settings, HomeMenuAction::Settings});
+ }
+ 
+-HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
++HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings,
++                                   bool hasCrossSlate) {
+   HomeMenuEntries items;
+-  appendHomeMenuItems(items, hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
++  appendHomeMenuItems(items, hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, hasCrossSlate);
+   return items;
+ }
+ 
+-HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
++HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings,
++                                      bool hasCrossSlate) {
+   HomeMenuEntries items;
+   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
+ 
+@@ -299,16 +308,19 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
+   }
+ 
+   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
++  if (hasCrossSlate) {
++    items.push({tr(STR_OPEN_CROSSSLATE), Settings, HomeMenuAction::OpenCrossSlate});
++  }
+   return items;
+ }
+ 
+ HomeMenuEntries buildSelectableHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks,
+-                                             bool hasClippings, bool includeContinueReading) {
++                                             bool hasClippings, bool includeContinueReading, bool hasCrossSlate) {
+   HomeMenuEntries items;
+   if (includeContinueReading) {
+     items.push({tr(STR_CONTINUE_READING), Book, HomeMenuAction::ContinueReading});
+   }
+-  appendHomeMenuItems(items, hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
++  appendHomeMenuItems(items, hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, hasCrossSlate);
+   return items;
+ }
+ 
+@@ -608,6 +620,9 @@ int HomeActivity::getMenuItemCount() const {
+   if (hasBookmarks || hasClippings) {
+     count++;
+   }
++  if (hasCrossSlate) {
++    count++;
++  }
+   return count;
+ }
+ 
+@@ -856,6 +871,11 @@ void HomeActivity::onEnter() {
+   // Check if any books have bookmarks (directory scan only, no file parsing)
+   hasBookmarks = BookmarkStore::hasAnyBookmarks();
+   hasClippings = ClippingStore::hasAnyClippings();
++#ifndef SIMULATOR
++  hasCrossSlate = ota_boot::findValidAlternateApp() != nullptr;
++#else
++  hasCrossSlate = false;
++#endif
+ 
+   selectorIndex = 0;
+   lastCarouselBookIndex = 0;
+@@ -901,7 +921,7 @@ void HomeActivity::onEnter() {
+   if (initialMenuItem != HomeMenuItem::NONE) {
+     const bool includeContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
+     const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+-                                                        includeContinueReading);
++                                                        includeContinueReading, hasCrossSlate);
+     const int menuIndex = findMenuActionIndex(menuItems, homeActionForInitialMenuItem(initialMenuItem));
+     if (menuIndex >= 0) {
+       selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
+@@ -1129,7 +1149,7 @@ void HomeActivity::renderCarouselFrameToCurrentBuffer(int bookIdx, BookReadingSt
+ 
+   const bool frameHasReadingStats = hasAnyBookStats(frameStats) || hasAnyGlobalStats(globalStats) ||
+                                     (showAllDevicesStats && hasAnyGlobalStats(allDevicesGlobalStats));
+-  const auto menuItems = buildHomeMenuItems(hasOpdsServers, frameHasReadingStats, hasBookmarks, hasClippings);
++  const auto menuItems = buildHomeMenuItems(hasOpdsServers, frameHasReadingStats, hasBookmarks, hasClippings, hasCrossSlate);
+   GUI.drawButtonMenu(
+       renderer,
+       Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing, pageWidth,
+@@ -1415,7 +1435,7 @@ void HomeActivity::loop() {
+     }
+ 
+     if (minimalMenuOpen) {
+-      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
++      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, hasCrossSlate);
+       const int menuCount = static_cast<int>(menuItems.size());
+       if (menuCount <= 0) {
+         minimalMenuOpen = false;
+@@ -1448,6 +1468,9 @@ void HomeActivity::loop() {
+           case HomeMenuAction::FileTransfer:
+             onFileTransferOpen();
+             break;
++          case HomeMenuAction::OpenCrossSlate:
++            onOpenCrossSlate();
++            break;
+           case HomeMenuAction::ContinueReading:
+           case HomeMenuAction::Settings:
+             break;
+@@ -1658,6 +1681,9 @@ void HomeActivity::loop() {
+       case HomeMenuAction::FileTransfer:
+         onFileTransferOpen();
+         break;
++      case HomeMenuAction::OpenCrossSlate:
++        onOpenCrossSlate();
++        break;
+       case HomeMenuAction::Settings:
+         onSettingsOpen();
+         break;
+@@ -1672,7 +1698,7 @@ void HomeActivity::loop() {
+     }
+ 
+     auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+-                                                  metrics.homeContinueReadingInMenu && !recentBooks.empty());
++                                                  metrics.homeContinueReadingInMenu && !recentBooks.empty(), hasCrossSlate);
+     const int menuSelectedIndex = selectorIndex - getHomeMenuSelectionOffset(recentBooks);
+     if (menuSelectedIndex < 0 || menuSelectedIndex >= static_cast<int>(menuItems.size())) {
+       return;
+@@ -1698,7 +1724,7 @@ void HomeActivity::loop() {
+   if (isCarousel) {
+     const int bookCount = visibleBookCount;
+     const int menuItemCount =
+-        static_cast<int>(buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings).size());
++        static_cast<int>(buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, hasCrossSlate).size());
+     const bool inCarouselRow = (selectorIndex < bookCount);
+     const int menuIdx = inCarouselRow ? 0 : (selectorIndex - bookCount);
+ 
+@@ -1817,7 +1843,7 @@ void HomeActivity::loop() {
+   } else {
+     const auto& metrics = UITheme::getInstance().getMetrics();
+     const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+-                                                        metrics.homeContinueReadingInMenu && !recentBooks.empty());
++                                                        metrics.homeContinueReadingInMenu && !recentBooks.empty(), hasCrossSlate);
+     auto handleTouch = [&](const bool activate) {
+       int touchedBookIndex = -1;
+       if (activate ? mappedInput.wasCoverTapped(touchedBookIndex) : mappedInput.wasCoverTouchedDown(touchedBookIndex)) {
+@@ -1889,7 +1915,7 @@ void HomeActivity::render(RenderLock&&) {
+ 
+     if (minimalMenuOpen) {
+       GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
+-      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
++      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, hasCrossSlate);
+       GUI.drawButtonMenu(
+           renderer, Rect{0, metrics.homeTopPadding, pageWidth, pageHeight - metrics.homeTopPadding},
+           static_cast<int>(menuItems.size()), minimalMenuIndex,
+@@ -1966,7 +1992,7 @@ void HomeActivity::render(RenderLock&&) {
+       GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
+       GUI.drawCarouselBorder(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
+                              recentBooks, centerIdx, inCarouselRow);
+-      const auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
++      const auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, hasCrossSlate);
+       if (static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL) {
+         static_cast<const LyraCarouselTheme&>(GUI).registerButtonMenuTouchTargets(renderer,
+                                                                                   static_cast<int>(menuItems.size()));
+@@ -2001,7 +2027,7 @@ void HomeActivity::render(RenderLock&&) {
+   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
+ 
+   auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+-                                                metrics.homeContinueReadingInMenu && !recentBooks.empty());
++                                                metrics.homeContinueReadingInMenu && !recentBooks.empty(), hasCrossSlate);
+   int homeCoverTileHeight = metrics.homeCoverTileHeight;
+   if (SETTINGS.uiTheme == CrossPointSettings::UI_THEME::CLASSIC) {
+     // Keep the four always-present actions clear of the button-hint strip on
+@@ -2115,6 +2141,32 @@ void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
+ 
+ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
+ 
++void HomeActivity::onOpenCrossSlate() {
++#ifndef SIMULATOR
++  auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_OPEN_CROSSSLATE),
++                                                              tr(STR_OPEN_CROSSSLATE_CONFIRM));
++  if (!confirmation) {
++    LOG_ERR("HOME", "OOM: CrossSlate confirmation");
++    requestUpdate();
++    return;
++  }
++  startActivityForResult(std::move(confirmation), [this](const ActivityResult& result) {
++    if (result.isCancelled) {
++      requestUpdate();
++      return;
++    }
++    const esp_partition_t* target = ota_boot::findValidAlternateApp();
++    if (target == nullptr || !ota_boot::switchTo(target)) {
++      LOG_ERR("HOME", "failed to switch to CrossSlate OTA app");
++      hasCrossSlate = false;
++      requestUpdate();
++      return;
++    }
++    ESP.restart();
++  });
++#endif
++}
++
+ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
+ 
+ void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+diff --git a/src/activities/home/HomeActivity.h b/src/activities/home/HomeActivity.h
+index fb79d20..81538b0 100644
+--- a/src/activities/home/HomeActivity.h
++++ b/src/activities/home/HomeActivity.h
+@@ -37,6 +37,7 @@ class HomeActivity final : public Activity {
+   bool hasBookmarks = false;
+   bool hasClippings = false;
+   bool hasOpdsServers = false;
++  bool hasCrossSlate = false;
+   bool minimalMenuOpen = false;
+   bool minimalSuppressInitialFrontRelease = false;
+   bool homeBookSwapLongPressHandled = false;
+@@ -80,6 +81,7 @@ class HomeActivity final : public Activity {
+   void onContinueReading();
+   void onRecentsOpen();
+   void onSettingsOpen();
++  void onOpenCrossSlate();
+   void onFileTransferOpen();
+   void onOpdsBrowserOpen();
+   void onReadingStatsOpen();
+diff --git a/src/activities/settings/SettingsActivity.cpp b/src/activities/settings/SettingsActivity.cpp
+index 8ee079a..254e3da 100644
+--- a/src/activities/settings/SettingsActivity.cpp
++++ b/src/activities/settings/SettingsActivity.cpp
+@@ -21,6 +21,7 @@
+ #include "FontSelectionActivity.h"
+ #include "KOReaderSettingsActivity.h"
+ #include "MappedInputManager.h"
++#include "Memory.h"
+ #include "OpdsServerListActivity.h"
+ #include "SdCardFontSystem.h"
+ #include "SdFirmwareUpdateActivity.h"
+@@ -41,6 +42,10 @@
+ #include "fontIds.h"
+ #include "util/DictionaryRegistry.h"
+ 
++#ifndef SIMULATOR
++#include "network/OtaBootSwitch.h"
++#endif
++
+ namespace fui = freeink::ui;
+ 
+ namespace {
+@@ -282,7 +287,12 @@ void SettingsActivity::rebuildSettingsLists() {
+   readerSettings = buildReaderSettingsParentList(allSettings);
+   readerFontSettings = buildReaderFontSettingsList(allSettings);
+   readerPageLayoutSettings = buildReaderPageLayoutSettingsList(allSettings);
+-  systemSettings = buildSystemSettingsParentList(allSettings);
++#ifndef SIMULATOR
++  const bool includeCrossSlate = crossSlatePartition != nullptr;
++#else
++  constexpr bool includeCrossSlate = false;
++#endif
++  systemSettings = buildSystemSettingsParentList(allSettings, includeCrossSlate);
+   systemDeviceSettings = buildSystemDeviceSettingsList(allSettings);
+   systemFilesCacheSettings = buildSystemFilesCacheSettingsList(allSettings);
+   systemReadingStatsSettings = buildSystemReadingStatsSettingsList(allSettings);
+@@ -608,6 +618,9 @@ void SettingsActivity::onEnter() {
+   preserveQuickResumeTimeoutOn =
+       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
+   quickResumeTimeoutAutoEnabled = false;
++#ifndef SIMULATOR
++  crossSlatePartition = ota_boot::findValidAlternateApp();
++#endif
+   syncQuickResumeTimeoutForSleepScreen(/*sleepScreenChanged=*/true, /*quickResumeTimeoutChanged=*/false);
+ 
+   rebuildSettingsLists();
+@@ -961,6 +974,33 @@ void SettingsActivity::toggleCurrentSetting() {
+       case SettingAction::ClockSync:
+         startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), resultHandler);
+         break;
++      case SettingAction::OpenCrossSlate:
++#ifndef SIMULATOR
++      {
++        auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_OPEN_CROSSSLATE),
++                                                                    tr(STR_OPEN_CROSSSLATE_CONFIRM));
++        if (!confirmation) {
++          LOG_ERR("SET", "OOM: CrossSlate confirmation");
++          requestUpdate();
++          break;
++        }
++        startActivityForResult(std::move(confirmation), [this](const ActivityResult& result) {
++          if (result.isCancelled) {
++            requestUpdate();
++            return;
++          }
++
++          const esp_partition_t* target = ota_boot::findValidAlternateApp();
++          if (target == nullptr || target != crossSlatePartition || !ota_boot::switchTo(target)) {
++            LOG_ERR("SET", "Failed to switch to CrossSlate OTA app");
++            requestUpdate();
++            return;
++          }
++          ESP.restart();
++        });
++      }
++#endif
++      break;
+       case SettingAction::ReaderFontOptions:
+       case SettingAction::ReaderPageLayout:
+       case SettingAction::ControlsPowerButton:
+diff --git a/src/activities/settings/SettingsActivity.h b/src/activities/settings/SettingsActivity.h
+index b572d6e..b51626a 100644
+--- a/src/activities/settings/SettingsActivity.h
++++ b/src/activities/settings/SettingsActivity.h
+@@ -10,6 +10,10 @@
+ #include <string>
+ #include <vector>
+ 
++#ifndef SIMULATOR
++#include <esp_partition.h>
++#endif
++
+ #include "CrossPointSettings.h"
+ #include "activities/Activity.h"
+ #include "components/OptionPopup.h"
+@@ -43,6 +47,7 @@ enum class SettingAction {
+   Language,
+   DownloadFonts,
+   ClockSync,
++  OpenCrossSlate,
+ };
+ 
+ struct SettingInfo {
+@@ -247,6 +252,9 @@ class SettingsActivity final : public Activity {
+ 
+   bool preserveQuickResumeTimeoutOn = false;
+   bool quickResumeTimeoutAutoEnabled = false;
++#ifndef SIMULATOR
++  const esp_partition_t* crossSlatePartition = nullptr;
++#endif
+   // The frontlight-panel shortcut opens Settings as a transient Home menu.
+   // Its swipe-up closes the screen; regular Settings keeps swipe scrolling.
+   bool dismissOnUpSwipe = false;
+diff --git a/src/idf_component.yml b/src/idf_component.yml
+new file mode 100644
+index 0000000..d752765
+--- /dev/null
++++ b/src/idf_component.yml
+@@ -0,0 +1,2 @@
++dependencies:
++  idf: '>=5.1'
+diff --git a/src/idf_component.yml.orig b/src/idf_component.yml.orig
+new file mode 100644
+index 0000000..d752765
+--- /dev/null
++++ b/src/idf_component.yml.orig
+@@ -0,0 +1,2 @@
++dependencies:
++  idf: '>=5.1'
+diff --git a/src/main.cpp b/src/main.cpp
+index 071ccc2..df13aca 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -61,6 +61,7 @@ enum : int {
+ inline esp_reset_reason_t esp_reset_reason() { return ESP_RST_UNKNOWN; }
+ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_UNDEFINED; }
+ #else
++#include <esp_ota_ops.h>
+ #include <esp_sleep.h>
+ #include <esp_system.h>
+ #endif
+@@ -95,6 +96,7 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
+ #include "activities/settings/SdFirmwareUpdateActivity.h"
+ #include "components/UITheme.h"
+ #include "fontIds.h"
++#include "network/OtaBootValidation.h"
+ #include "network/UsbSerialFileTransfer.h"
+ #ifdef SIMULATOR
+ #include <SimulatorLifecycle.h>
+@@ -130,6 +132,37 @@ static void logBootHeap(const char* stage) {
+   LOG_DBG("BOOTMEM", "%s: free=%u maxAlloc=%u", stage, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+ }
+ 
++#ifndef SIMULATOR
++static void confirmPendingOtaImage() {
++  static_assert(static_cast<uint32_t>(ESP_OTA_IMG_PENDING_VERIFY) == ota_boot::kOtaImgPendingVerify);
++
++  const esp_partition_t* const running = esp_ota_get_running_partition();
++  if (running == nullptr) {
++    LOG_ERR("BOOT", "OTA validation skipped: running app partition not found");
++    return;
++  }
++
++  esp_ota_img_states_t state;
++  const esp_err_t stateResult = esp_ota_get_state_partition(running, &state);
++  if (stateResult != ESP_OK) {
++    LOG_ERR("BOOT", "OTA validation state read failed: %d", static_cast<int>(stateResult));
++    return;
++  }
++
++  if (!ota_boot::shouldConfirmRunningAppState(static_cast<uint32_t>(state))) {
++    LOG_DBG("BOOT", "OTA running app state=%u; validation not required", static_cast<unsigned>(state));
++    return;
++  }
++
++  const esp_err_t confirmResult = esp_ota_mark_app_valid_cancel_rollback();
++  if (confirmResult == ESP_OK) {
++    LOG_INF("BOOT", "OTA pending image marked valid; rollback cancelled");
++  } else {
++    LOG_ERR("BOOT", "OTA pending image validation failed: %d", static_cast<int>(confirmResult));
++  }
++}
++#endif
++
+ // Fonts
+ EpdFont lexenddeca10RegularFont(&lexenddeca_10_regular);
+ EpdFont lexenddeca10BoldFont(&lexenddeca_10_bold);
+@@ -784,6 +817,12 @@ void setup() {
+ #endif
+ #endif
+ 
++#ifndef SIMULATOR
++  // Confirm immediately after logging is available, before any wake routing,
++  // storage access, or other fallible firmware initialization can cause a reset.
++  confirmPendingOtaImage();
++#endif
++
+   HalSystem::begin();
+   LOG_INF("BOOT", "Reset diagnostic: reset=%d(%s) sleepWake=%d(%s)", static_cast<int>(rawResetReason),
+           resetReasonName(rawResetReason), static_cast<int>(rawWakeupCause), wakeupCauseName(rawWakeupCause));
+diff --git a/src/network/CrossPointWebServer.cpp b/src/network/CrossPointWebServer.cpp
+index 4fac552..6f131d9 100644
+--- a/src/network/CrossPointWebServer.cpp
++++ b/src/network/CrossPointWebServer.cpp
+@@ -29,6 +29,7 @@
+ #include "SettingsList.h"
+ #include "WebDAVHandler.h"
+ #include "WifiCredentialStore.h"
++#include "html/CrossSlatePageHtml.generated.h"
+ #include "html/FilesPageHtml.generated.h"
+ #include "html/FontsPageHtml.generated.h"
+ #include "html/HomePageHtml.generated.h"
+@@ -333,6 +334,16 @@ void CrossPointWebServer::begin() {
+   server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
+   server->on("/api/fonts/delete", HTTP_POST, [this] { handleFontDelete(); });
+ 
++  // CrossSlate dashboard editor (tasks + pinned note on the shared SD card)
++  server->on("/crossslate", HTTP_GET, [this] { handleCrossSlatePage(); });
++  server->on("/api/crossslate", HTTP_GET, [this] { handleCrossSlateGet(); });
++  server->on("/api/crossslate/save", HTTP_POST, [this] { handleCrossSlateSave(); });
++  server->on("/api/crossslate/doodle", HTTP_POST,
++             [this] { handleCrossSlateDoodlePost(); },
++             [this] { handleCrossSlateDoodleData(); });
++  server->on("/api/crossslate/doodle/delete", HTTP_POST, [this] { handleCrossSlateDoodleDelete(); });
++  server->on("/api/crossslate/debug", HTTP_GET, [this] { handleCrossSlateDoodleDebug(); });
++
+   // OPDS server endpoints
+   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
+   server->on("/api/opds", HTTP_POST, [this] { handlePostOpdsServer(); });
+@@ -495,6 +506,9 @@ CrossPointWebServer::WsUploadStatus CrossPointWebServer::getWsUploadStatus() con
+ 
+ static void sendHtmlContent(WebServer* server, const char* data, size_t len) {
+   server->sendHeader("Content-Encoding", "gzip");
++  // Pages are gzipped blobs baked into the firmware: a cached page can easily
++  // be one firmware release behind, breaking API contracts. Always revalidate.
++  server->sendHeader("Cache-Control", "no-cache");
+   server->send_P(200, "text/html", data, len);
+ }
+ 
+@@ -1584,6 +1598,457 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
+   server->send(200, "text/plain", "OK");
+ }
+ 
++// ---- CrossSlate dashboard editor ----
++// CrossSlate (the other OTA slot's firmware) reads its dashboard content from
++// /crossslate/tasks.txt (one task per line, max 5 lines x 80 chars) and
++// /crossslate/pinned.txt (one line, max 160 chars). This firmware only edits
++// those files on the shared SD card; it never renders them on screen.
++
++namespace {
++constexpr const char* CROSSSLATE_DIR = "/crossslate";
++constexpr const char* CROSSSLATE_TASKS_PATH = "/crossslate/tasks.txt";
++constexpr const char* CROSSSLATE_TASKS_TMP_PATH = "/crossslate/tasks.tmp";
++constexpr const char* CROSSSLATE_PINNED_PATH = "/crossslate/pinned.txt";
++constexpr const char* CROSSSLATE_PINNED_TMP_PATH = "/crossslate/pinned.tmp";
++constexpr size_t CROSSSLATE_MAX_TASKS = 5;
++constexpr size_t CROSSSLATE_MAX_TASK_LEN = 80;  // per task, after trimming
++constexpr size_t CROSSSLATE_MAX_PINNED_LEN = 35;  // matches what the X4 dashboard can visibly render
++// Largest possible accepted payload: 5 tasks x 80 + newlines + pinned + slack.
++constexpr size_t CROSSSLATE_TEXT_BUF_LEN = 512;
++
++// Doodle canvas: a 1-bit monochrome BMP posted as a raw octet-stream body.
++constexpr const char* CROSSSLATE_DOODLE_PATH = "/crossslate/doodle.bmp";
++constexpr const char* CROSSSLATE_DOODLE_TMP_PATH = "/crossslate/doodle.tmp";
++// 400x500 lands around 25KB; the cap leaves headroom for the full 480x800
++// display (48KB) without letting an oversized body exhaust the heap.
++constexpr size_t CROSSSLATE_DOODLE_MAX_BODY = 96 * 1024;
++constexpr int32_t CROSSSLATE_DOODLE_MIN_DIM = 100;
++constexpr int32_t CROSSSLATE_DOODLE_MAX_WIDTH = 800;
++constexpr int32_t CROSSSLATE_DOODLE_MAX_HEIGHT = 1280;
++
++// Streaming state for the in-flight doodle upload (one request at a time,
++// same assumption as the font upload path). Kept out of the class so the
++// handlers stay const.
++struct CrossSlateDoodleUpload {
++  HalFile file;
++  bool valid = false;
++  bool headerChecked = false;
++  size_t bytesReceived = 0;
++  uint8_t header[30] = {0};  // must cover bpp at offsets 28-29
++  size_t headerLen = 0;
++};
++CrossSlateDoodleUpload doodleUpload;
++
++// Swap a fully written .tmp file over its final name using the proven
++// ClippingStore dance: SdFat's rename() fails when the destination exists, so
++// the current file goes to .bak first, the tmp is renamed into the freed slot,
++// then the backup is dropped. Restores the old content if the final rename
++// fails, so a torn write never leaves a half-file at the final path.
++bool renameTmpOverFinal(const char* tmpPath, const char* finalPath) {
++  char bakPath[64];
++  snprintf(bakPath, sizeof(bakPath), "%s.bak", finalPath);
++  const bool hadFinal = Storage.exists(finalPath);
++  if (hadFinal) {
++    if (Storage.exists(bakPath) && !Storage.remove(bakPath)) {
++      LOG_ERR("WEB", "CrossSlate save failed: cannot clear stale %s", bakPath);
++      Storage.remove(tmpPath);
++      return false;
++    }
++    if (!Storage.rename(finalPath, bakPath)) {
++      LOG_ERR("WEB", "CrossSlate save failed: cannot back up %s", finalPath);
++      Storage.remove(tmpPath);
++      return false;
++    }
++  }
++  if (!Storage.rename(tmpPath, finalPath)) {
++    LOG_ERR("WEB", "CrossSlate save failed: cannot rename %s to %s", tmpPath, finalPath);
++    Storage.remove(tmpPath);
++    if (hadFinal) Storage.rename(bakPath, finalPath);  // restore old content
++    return false;
++  }
++  if (hadFinal && Storage.exists(bakPath)) Storage.remove(bakPath);
++  return true;
++}
++
++// Crash-atomic small-file write: stream the data to .tmp, close it (only one
++// reader may hold a file open), then swap it over the final name.
++bool writeTmpAndRename(const char* tmpPath, const char* finalPath, const char* data, size_t len) {
++  HalFile file;
++  if (!Storage.openFileForWrite("WEB", tmpPath, file)) {
++    LOG_ERR("WEB", "CrossSlate save failed: cannot open %s", tmpPath);
++    return false;
++  }
++  const size_t written = file.write(data, len);
++  file.close();
++  if (written != len) {
++    LOG_ERR("WEB", "CrossSlate save failed: short write to %s (%u/%u)", tmpPath, written, static_cast<unsigned>(len));
++    Storage.remove(tmpPath);
++    return false;
++  }
++  return renameTmpOverFinal(tmpPath, finalPath);
++}
++}  // namespace
++
++void CrossPointWebServer::handleCrossSlatePage() const {
++  sendHtmlContent(server.get(), CrossSlatePageHtml, sizeof(CrossSlatePageHtml));
++}
++
++void CrossPointWebServer::handleCrossSlateGet() const {
++  // Stack buffer sized for the accepted payload (<= 512B): avoids heap churn on
++  // a lightweight GET that only fills a small JSON document.
++  char tasksBuf[CROSSSLATE_TEXT_BUF_LEN] = {0};
++  char pinnedBuf[CROSSSLATE_MAX_PINNED_LEN + 1] = {0};
++
++  // Missing files mean "nothing configured yet" — serve empty fields so the
++  // browser can save an initial set. Only I/O errors are logged.
++  const size_t tasksLen = Storage.readFileToBuffer(CROSSSLATE_TASKS_PATH, tasksBuf, sizeof(tasksBuf));
++  const size_t pinnedLen = Storage.readFileToBuffer(CROSSSLATE_PINNED_PATH, pinnedBuf, sizeof(pinnedBuf));
++  tasksBuf[tasksLen] = '\0';
++  pinnedBuf[pinnedLen] = '\0';
++
++  JsonDocument doc;
++  JsonArray tasks = doc["tasks"].to<JsonArray>();
++  size_t count = 0;
++  char* line = tasksBuf;
++  while (line && count < CROSSSLATE_MAX_TASKS) {
++    char* end = strchr(line, '\n');
++    if (end) {
++      *end = '\0';
++    }
++    // Trim whitespace the same way CrossSlate's parser does.
++    while (*line && isspace(static_cast<unsigned char>(*line))) {
++      line++;
++    }
++    char* lineEnd = line + strlen(line);
++    while (lineEnd > line && isspace(static_cast<unsigned char>(lineEnd[-1]))) {
++      lineEnd--;
++      *lineEnd = '\0';
++    }
++    if (*line) {
++      char capped[CROSSSLATE_MAX_TASK_LEN + 1] = {0};
++      snprintf(capped, sizeof(capped), "%s", line);
++      tasks.add(capped);
++      count++;
++    }
++    line = end ? end + 1 : nullptr;
++  }
++  char pinnedCapped[CROSSSLATE_MAX_PINNED_LEN + 1] = {0};
++  snprintf(pinnedCapped, sizeof(pinnedCapped), "%s", pinnedBuf);
++  doc["pinned"] = pinnedCapped;
++  doc["doodle"] = Storage.exists(CROSSSLATE_DOODLE_PATH);
++  doc["doodleTmp"] = Storage.exists(CROSSSLATE_DOODLE_TMP_PATH);
++
++  String response;
++  serializeJson(doc, response);
++  server->send(200, "application/json", response);
++}
++
++void CrossPointWebServer::handleCrossSlateSave() const {
++  if (!server->hasArg("plain")) {
++    server->send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
++    return;
++  }
++
++  const String body = server->arg("plain");
++  JsonDocument doc;
++  const DeserializationError err = deserializeJson(doc, body);
++  if (err) {
++    server->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
++    return;
++  }
++
++  // Validate tasks: max 5 non-empty lines, 80 chars each after trimming.
++  // Accept the raw multiline textarea value as either a single JSON string
++  // (what the bundled page sends) or a pre-split array.
++  JsonArrayConst tasksIn = doc["tasks"].as<JsonArrayConst>();
++  const bool tasksIsString = doc["tasks"].is<const char*>();
++  if (tasksIn.isNull() && !tasksIsString) {
++    server->send(400, "application/json", "{\"error\":\"Missing tasks\"}");
++    return;
++  }
++  char tasksBuf[CROSSSLATE_TEXT_BUF_LEN];
++  size_t tasksPos = 0;
++  size_t taskCount = 0;
++  auto appendTask = [&](const char* raw) -> bool {
++    // Trim leading/trailing whitespace the same way CrossSlate's parser does.
++    const char* begin = raw;
++    while (*begin && isspace(static_cast<unsigned char>(*begin))) {
++      begin++;
++    }
++    const char* end = begin + strlen(begin);
++    while (end > begin && isspace(static_cast<unsigned char>(end[-1]))) {
++      end--;
++    }
++    if (begin == end) {
++      return true;  // skip empty lines entirely
++    }
++    if (taskCount >= CROSSSLATE_MAX_TASKS) {
++      return false;
++    }
++    if (static_cast<size_t>(end - begin) > CROSSSLATE_MAX_TASK_LEN) {
++      return false;
++    }
++    if (tasksPos + (end - begin) + 1 >= sizeof(tasksBuf)) {
++      return false;
++    }
++    memcpy(tasksBuf + tasksPos, begin, end - begin);
++    tasksPos += end - begin;
++    tasksBuf[tasksPos++] = '\n';
++    taskCount++;
++    return true;
++  };
++
++  bool valid = true;
++  if (doc["tasks"].is<const char*>()) {
++    const char* text = doc["tasks"].as<const char*>();
++    const char* line = text;
++    while (valid && line) {
++      const char* end = strchr(line, '\n');
++      if (end) {
++        const size_t len = static_cast<size_t>(end - line);
++        // Generous staging buffer so over-length raw lines (e.g. long runs of
++        // leading whitespace) reach appendTask and get judged after trimming.
++        char single[256];
++        if (len >= sizeof(single)) {
++          valid = false;
++          break;
++        }
++        memcpy(single, line, len);
++        single[len] = '\0';
++        valid = appendTask(single);
++        line = end + 1;
++      } else {
++        valid = appendTask(line);
++        line = nullptr;
++      }
++    }
++  } else {
++    for (JsonVariantConst t : tasksIn) {
++      if (!t.is<const char*>() || !appendTask(t.as<const char*>())) {
++        valid = false;
++        break;
++      }
++    }
++  }
++
++  const char* pinnedRaw = doc["pinned"] | "";
++  if (strlen(pinnedRaw) > CROSSSLATE_MAX_PINNED_LEN || strchr(pinnedRaw, '\n') != nullptr ||
++      strchr(pinnedRaw, '\r') != nullptr) {
++    server->send(400, "application/json",
++                 "{\"error\":\"Pinned note must be a single line of at most 160 characters\"}");
++    return;
++  }
++
++  if (!valid) {
++    server->send(400, "application/json", "{\"error\":\"Tasks must be at most 5 non-empty lines of 80 characters\"}");
++    return;
++  }
++
++  if (!Storage.ready()) {
++    LOG_ERR("WEB", "CrossSlate save failed: SD storage not ready");
++    server->send(500, "application/json", "{\"error\":\"SD storage not ready\"}");
++    return;
++  }
++
++  if (!Storage.exists(CROSSSLATE_DIR) && !Storage.mkdir(CROSSSLATE_DIR)) {
++    LOG_ERR("WEB", "CrossSlate save failed: cannot create %s", CROSSSLATE_DIR);
++    server->send(500, "application/json", "{\"error\":\"Cannot create /crossslate directory\"}");
++    return;
++  }
++
++  // Write .tmp then rename — the same crash-atomic pattern CrossSlate itself
++  // uses, and required because both firmwares share this SD card. The shared
++  // namespace helper implements the proven ClippingStore dance (see above).
++
++  // Serialize both files up front so validation failures cannot leave a
++  // half-updated pair behind.
++  char pinnedBuf[CROSSSLATE_MAX_PINNED_LEN + 2];
++  const size_t pinnedLen = snprintf(pinnedBuf, sizeof(pinnedBuf), "%s\n", pinnedRaw);
++
++  if (!writeTmpAndRename(CROSSSLATE_TASKS_TMP_PATH, CROSSSLATE_TASKS_PATH, tasksBuf, tasksPos)) {
++    server->send(500, "application/json", "{\"error\":\"Failed to write tasks.txt\"}");
++    return;
++  }
++  if (!writeTmpAndRename(CROSSSLATE_PINNED_TMP_PATH, CROSSSLATE_PINNED_PATH, pinnedBuf, pinnedLen)) {
++    server->send(500, "application/json", "{\"error\":\"Failed to write pinned.txt\"}");
++    return;
++  }
++
++  LOG_INF("WEB", "CrossSlate saved %u tasks + pinned note", static_cast<unsigned>(taskCount));
++  server->send(200, "application/json", "{\"ok\":true}");
++}
++
++// ---- CrossSlate doodle upload ----
++// The browser turns the canvas into a 1-bit monochrome BMP and POSTs it as a
++// raw octet-stream body. It is streamed to /crossslate/doodle.tmp (never
++// directly to the final path: both firmwares share this SD card, so a torn
++// write must never look like valid content) and swapped into place atomically
++// in the POST completion handler.
++
++void CrossPointWebServer::handleCrossSlateDoodleData() const {
++  HTTPUpload& upload = server->upload();
++
++  switch (upload.status) {
++    case UPLOAD_FILE_START: {
++      doodleUpload.file = HalFile();
++      doodleUpload.valid = false;
++      doodleUpload.headerChecked = false;
++      doodleUpload.bytesReceived = 0;
++      doodleUpload.headerLen = 0;
++
++      if (!Storage.ready()) {
++        LOG_ERR("WEB", "Doodle upload failed: SD storage not ready");
++        break;
++      }
++      if (!Storage.exists(CROSSSLATE_DIR) && !Storage.mkdir(CROSSSLATE_DIR)) {
++        LOG_ERR("WEB", "Doodle upload failed: cannot create %s", CROSSSLATE_DIR);
++        break;
++      }
++      if (!Storage.openFileForWrite("WEB", CROSSSLATE_DOODLE_TMP_PATH, doodleUpload.file)) {
++        LOG_ERR("WEB", "Doodle upload failed: cannot open %s", CROSSSLATE_DOODLE_TMP_PATH);
++        break;
++      }
++      doodleUpload.valid = true;
++      LOG_INF("WEB", "Doodle upload: started");
++      break;
++    }
++
++    case UPLOAD_FILE_WRITE: {
++      if (!doodleUpload.valid) break;
++
++      // Multipart chunks may split the 26-byte BMP header across chunks, so
++      // stage the first 26 bytes before validating. Reading upload.buf directly
++      // after an accumulated-size check would inspect the wrong bytes.
++      if (!doodleUpload.headerChecked) {
++        const size_t need = sizeof(doodleUpload.header);  // 30: BMP fields through bpp
++        const size_t toCopy = (upload.currentSize < need - doodleUpload.headerLen)
++                                  ? upload.currentSize
++                                  : need - doodleUpload.headerLen;
++        if (toCopy > 0) {
++          memcpy(doodleUpload.header + doodleUpload.headerLen, upload.buf, toCopy);
++          doodleUpload.headerLen += toCopy;
++        }
++        if (doodleUpload.headerLen < need) break;  // wait for more chunks
++        doodleUpload.headerChecked = true;
++        const uint8_t* hdr = doodleUpload.header;
++        const bool okMagic = hdr[0] == 'B' && hdr[1] == 'M';
++        const uint16_t bpp = static_cast<uint16_t>(hdr[28]) | (static_cast<uint16_t>(hdr[29]) << 8);
++        const int32_t width = static_cast<int32_t>(hdr[18]) | (static_cast<int32_t>(hdr[19]) << 8) |
++                              (static_cast<int32_t>(hdr[20]) << 16) | (static_cast<int32_t>(hdr[21]) << 24);
++        const int32_t height = static_cast<int32_t>(hdr[22]) | (static_cast<int32_t>(hdr[23]) << 8) |
++                               (static_cast<int32_t>(hdr[24]) << 16) | (static_cast<int32_t>(hdr[25]) << 24);
++        if (!okMagic || bpp != 1 || width < CROSSSLATE_DOODLE_MIN_DIM || width > CROSSSLATE_DOODLE_MAX_WIDTH ||
++            height < CROSSSLATE_DOODLE_MIN_DIM || height > CROSSSLATE_DOODLE_MAX_HEIGHT) {
++          LOG_ERR("WEB", "Doodle upload failed: bad BMP header (bpp=%u, %ldx%ld)", bpp,
++                  static_cast<long>(width), static_cast<long>(height));
++          doodleUpload.file.close();
++          doodleUpload.valid = false;
++          break;
++        }
++      }
++
++      doodleUpload.bytesReceived += upload.currentSize;
++      if (doodleUpload.bytesReceived > CROSSSLATE_DOODLE_MAX_BODY) {
++        LOG_ERR("WEB", "Doodle upload failed: body exceeds %u bytes", static_cast<unsigned>(CROSSSLATE_DOODLE_MAX_BODY));
++        doodleUpload.file.close();
++        doodleUpload.valid = false;
++        break;
++      }
++
++      if (doodleUpload.file.write(upload.buf, upload.currentSize) != upload.currentSize) {
++        LOG_ERR("WEB", "Doodle upload failed: short write to %s", CROSSSLATE_DOODLE_TMP_PATH);
++        doodleUpload.file.close();
++        doodleUpload.valid = false;
++      }
++      break;
++    }
++
++    case UPLOAD_FILE_END: {
++      LOG_INF("WEB", "Doodle upload: end, valid=%d bytes=%u headerChecked=%d", doodleUpload.valid,
++              static_cast<unsigned>(doodleUpload.bytesReceived), doodleUpload.headerChecked);
++      if (doodleUpload.file.isOpen()) {
++        doodleUpload.file.close();
++      }
++      if (doodleUpload.valid) {
++        // Swap the tmp over the final path using the shared atomic pattern.
++        if (renameTmpOverFinal(CROSSSLATE_DOODLE_TMP_PATH, CROSSSLATE_DOODLE_PATH)) {
++          LOG_INF("WEB", "Doodle saved: %u bytes", static_cast<unsigned>(doodleUpload.bytesReceived));
++        } else {
++          doodleUpload.valid = false;
++        }
++      }
++      if (!doodleUpload.valid) {
++        Storage.remove(CROSSSLATE_DOODLE_TMP_PATH);
++      }
++      break;
++    }
++
++    case UPLOAD_FILE_ABORTED: {
++      if (doodleUpload.file.isOpen()) {
++        doodleUpload.file.close();
++      }
++      Storage.remove(CROSSSLATE_DOODLE_TMP_PATH);
++      doodleUpload.valid = false;
++      LOG_ERR("WEB", "Doodle upload aborted");
++      break;
++    }
++  }
++}
++
++void CrossPointWebServer::handleCrossSlateDoodlePost() const {
++  // Run after the streaming callback: doodleUpload.valid reflects the outcome.
++  if (doodleUpload.valid) {
++    doodleUpload.valid = false;
++    server->send(200, "application/json", "{\"ok\":true}");
++  } else {
++    server->send(400, "application/json",
++                 "{\"error\":\"Invalid doodle: expected a 1-bit BMP body of at most 96KB\"}");
++  }
++}
++
++void CrossPointWebServer::handleCrossSlateDoodleDebug() const {
++  // Temporary diagnostics: recent log lines + doodle file state, so upload
++  // failures are visible from the browser without a serial cable.
++  const std::string logs = getLastLogs();
++  String body;
++  body += "{\"doodle\":";
++  body += Storage.exists(CROSSSLATE_DOODLE_PATH) ? "true" : "false";
++  body += ",\"doodleTmp\":";
++  body += Storage.exists(CROSSSLATE_DOODLE_TMP_PATH) ? "true" : "false";
++  body += ",\"log\":";
++  // JSON-escape: logs contain quotes/backslashes rarely; escape both + newlines.
++  body += "\"";
++  for (const char c : logs) {
++    switch (c) {
++      case '"': body += "\\\""; break;
++      case '\\': body += "\\\\"; break;
++      case '\n': body += "\\n"; break;
++      case '\r': break;
++      default: body += c; break;
++    }
++  }
++  body += "\"}";
++  server->send(200, "application/json", body);
++}
++
++void CrossPointWebServer::handleCrossSlateDoodleDelete() const {
++  if (!Storage.ready()) {
++    LOG_ERR("WEB", "Doodle delete failed: SD storage not ready");
++    server->send(500, "application/json", "{\"error\":\"SD storage not ready\"}");
++    return;
++  }
++  bool removed = true;
++  if (Storage.exists(CROSSSLATE_DOODLE_PATH) && !Storage.remove(CROSSSLATE_DOODLE_PATH)) {
++    LOG_ERR("WEB", "Doodle delete failed: cannot remove %s", CROSSSLATE_DOODLE_PATH);
++    removed = false;
++  }
++  if (!removed) {
++    server->send(500, "application/json", "{\"error\":\"Failed to delete doodle\"}");
++    return;
++  }
++  server->send(200, "application/json", "{\"ok\":true}");
++}
++
+ // ---- Wi-Fi Credentials API ----
+ 
+ void CrossPointWebServer::handleGetWifiNetworks() const {
+diff --git a/src/network/CrossPointWebServer.h b/src/network/CrossPointWebServer.h
+index a451d76..b02ea76 100644
+--- a/src/network/CrossPointWebServer.h
++++ b/src/network/CrossPointWebServer.h
+@@ -111,6 +111,15 @@ class CrossPointWebServer {
+   void handleGetSettings() const;
+   void handlePostSettings();
+ 
++  // CrossSlate dashboard handlers (shared-SD tasks/pinned note edited from the browser)
++  void handleCrossSlatePage() const;
++  void handleCrossSlateGet() const;
++  void handleCrossSlateSave() const;
++  void handleCrossSlateDoodleData() const;
++  void handleCrossSlateDoodlePost() const;
++  void handleCrossSlateDoodleDelete() const;
++  void handleCrossSlateDoodleDebug() const;
++
+   // Font management handlers
+   void handleFontsPage() const;
+   void handleFontList() const;
+diff --git a/src/network/OtaAppProbe.h b/src/network/OtaAppProbe.h
+new file mode 100644
+index 0000000..c21239f
+--- /dev/null
++++ b/src/network/OtaAppProbe.h
+@@ -0,0 +1,27 @@
++#pragma once
++
++#include <cstdint>
++
++namespace ota_boot {
++
++// CrossSlate ships only for the XTEink X3/X4 (ESP32-C3). The alternate slot is
++// accepted only when its image targets this exact chip.
++constexpr uint16_t kCrossSlateChipId = 5;  // ESP_CHIP_ID_ESP32C3
++
++constexpr uint8_t kEspImageMagic = 0xE9;
++constexpr uint8_t kMaxEspImageSegments = 16;
++constexpr uint32_t kEspAppDescriptionMagic = 0xABCD5432;
++
++struct AppImageProbe {
++  uint8_t imageMagic;
++  uint8_t segmentCount;
++  uint16_t chipId;
++  uint32_t appDescriptionMagic;
++};
++
++constexpr bool isValidAlternateAppImage(const AppImageProbe& probe, const uint16_t requiredChipId) {
++  return probe.imageMagic == kEspImageMagic && probe.segmentCount > 0 && probe.segmentCount <= kMaxEspImageSegments &&
++         probe.chipId == requiredChipId && probe.appDescriptionMagic == kEspAppDescriptionMagic;
++}
++
++}  // namespace ota_boot
+diff --git a/src/network/OtaBootSwitch.cpp b/src/network/OtaBootSwitch.cpp
+index 7c3ca76..2190204 100644
+--- a/src/network/OtaBootSwitch.cpp
++++ b/src/network/OtaBootSwitch.cpp
+@@ -1,16 +1,71 @@
+ #include "OtaBootSwitch.h"
+ 
+ #include <Logging.h>
++#include <esp_app_format.h>
++#include <esp_ota_ops.h>
+ #include <esp_rom_crc.h>
+ #include <spi_flash_mmap.h>
+ #include <string.h>
+ 
++#include "OtaAppProbe.h"
++
+ namespace ota_boot {
+ 
+ uint32_t computeSeqCrc(uint32_t seq) {
+   return esp_rom_crc32_le(UINT32_MAX, reinterpret_cast<const uint8_t*>(&seq), kOtaSeqCrcLen);
+ }
+ 
++const esp_partition_t* findValidAlternateApp() {
++  static_assert(kMaxEspImageSegments == ESP_IMAGE_MAX_SEGMENTS);
++
++  const esp_partition_t* running = esp_ota_get_running_partition();
++  if (!running) {
++    LOG_ERR("BOOT", "running app partition not found");
++    return nullptr;
++  }
++
++  const esp_partition_t* alternate = esp_ota_get_next_update_partition(running);
++  if (!alternate || alternate == running || alternate->type != ESP_PARTITION_TYPE_APP ||
++      alternate->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_0 || alternate->subtype > ESP_PARTITION_SUBTYPE_APP_OTA_15) {
++    LOG_DBG("BOOT", "alternate OTA app partition not found");
++    return nullptr;
++  }
++
++  esp_image_header_t alternateHeader = {};
++  if (esp_partition_read(alternate, 0, &alternateHeader, sizeof(alternateHeader)) != ESP_OK) {
++    LOG_ERR("BOOT", "OTA app header read failed");
++    return nullptr;
++  }
++
++  // Read the immutable app descriptor directly. esp_ota_get_partition_description()
++  // in IDF 5 rejects an otherwise bootable IDF 4.4 image produced by CrossSlate.
++  // This matches the bounded header check used by CrossSlate itself.
++  constexpr size_t kAppDescOffset = sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
++  esp_app_desc_t alternateDescription = {};
++  if (kAppDescOffset + sizeof(alternateDescription) > alternate->size ||
++      esp_partition_read(alternate, kAppDescOffset, &alternateDescription, sizeof(alternateDescription)) != ESP_OK) {
++    LOG_DBG("BOOT", "alternate OTA app descriptor read failed");
++    return nullptr;
++  }
++
++  const AppImageProbe probe{
++      .imageMagic = alternateHeader.magic,
++      .segmentCount = alternateHeader.segment_count,
++      .chipId = static_cast<uint16_t>(alternateHeader.chip_id),
++      .appDescriptionMagic = alternateDescription.magic_word,
++  };
++  // CrossSlate is only shipped for the X3/X4 (ESP32-C3). Requiring the exact
++  // chip ID prevents offering the switch on S3 builds where a plausible S3
++  // image could sit in the alternate slot.
++  if (!isValidAlternateAppImage(probe, kCrossSlateChipId)) {
++    LOG_DBG("BOOT", "alternate OTA app image header is invalid");
++    return nullptr;
++  }
++
++  LOG_INF("BOOT", "valid alternate OTA app found in %s", alternate->label);
++  return alternate;
++}
++
+ bool switchTo(const esp_partition_t* dest) {
+   if (!dest) return false;
+ 
+diff --git a/src/network/OtaBootSwitch.h b/src/network/OtaBootSwitch.h
+index 3c52f7b..27919bb 100644
+--- a/src/network/OtaBootSwitch.h
++++ b/src/network/OtaBootSwitch.h
+@@ -40,4 +40,9 @@ uint32_t computeSeqCrc(uint32_t seq);
+ // Returns true on success.
+ bool switchTo(const esp_partition_t* dest);
+ 
++// Returns the other OTA slot only when it contains a plausible app image for
++// the same chip and a valid ESP app description. The runtime full-image
++// verifier cannot be used for our patched X3/X4 images; see the note above.
++const esp_partition_t* findValidAlternateApp();
++
+ }  // namespace ota_boot
+diff --git a/src/network/OtaBootValidation.h b/src/network/OtaBootValidation.h
+new file mode 100644
+index 0000000..da0f1e4
+--- /dev/null
++++ b/src/network/OtaBootValidation.h
+@@ -0,0 +1,13 @@
++#pragma once
++
++#include <cstdint>
++
++namespace ota_boot {
++
++// ESP-IDF's ESP_OTA_IMG_PENDING_VERIFY value. Keep this standalone so host
++// tests can verify the mutation decision without linking ESP-IDF.
++constexpr uint32_t kOtaImgPendingVerify = 1;
++
++constexpr bool shouldConfirmRunningAppState(const uint32_t state) { return state == kOtaImgPendingVerify; }
++
++}  // namespace ota_boot
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index 5052107..12172dd 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -50,3 +50,5 @@ add_subdirectory(text_pool)
+ add_subdirectory(clip_word_store)
+ add_subdirectory(dict_layout)
+ add_subdirectory(reader_progress_save_debouncer)
++add_subdirectory(ota_app_probe)
++add_subdirectory(ota_boot_validation)
+diff --git a/web/pages/crossslate.css b/web/pages/crossslate.css
+new file mode 100644
+index 0000000..0b6f057
+--- /dev/null
++++ b/web/pages/crossslate.css
+@@ -0,0 +1,93 @@
++textarea {
++      width: 100%;
++      box-sizing: border-box;
++      padding: 10px 12px;
++      border: 1px solid var(--border-color);
++      border-radius: var(--radius-sm);
++      font-size: 0.95em;
++      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
++      background: var(--card-bg);
++      color: var(--font-color);
++      resize: vertical;
++      min-height: 120px;
++      transition: border-color 0.15s, box-shadow 0.15s;
++    }
++textarea:focus,
++    #pinned:focus {
++      outline: none;
++      border-color: var(--accent-color);
++      box-shadow: 0 0 0 3px var(--accent-soft);
++    }
++.hint {
++      color: var(--label-color);
++      font-size: 0.85em;
++      margin: 4px 0 10px;
++    }
++.char-count {
++      color: var(--label-color);
++      font-size: 0.8em;
++      text-align: right;
++      margin-top: 4px;
++      min-height: 1em;
++    }
++#pinned {
++      width: 100%;
++      box-sizing: border-box;
++      padding: 8px 12px;
++      border: 1px solid var(--border-color);
++      border-radius: var(--radius-sm);
++      font-size: 0.95em;
++      background: var(--card-bg);
++      color: var(--font-color);
++      transition: border-color 0.15s, box-shadow 0.15s;
++    }
++#doodleCanvas {
++      width: 100%;
++      max-width: 456px;
++      height: 270px;
++      touch-action: none;
++      border: 1px solid var(--border-color);
++      border-radius: var(--radius-sm);
++      background: #fff;
++      display: block;
++      cursor: crosshair;
++    }
++.doodle-actions {
++      display: flex;
++      gap: 10px;
++      margin-top: 10px;
++      flex-wrap: wrap;
++    }
++.doodle-status {
++      color: var(--label-color);
++      font-size: 0.85em;
++      margin-top: 8px;
++    }
++
++.frame-row {
++      display: flex;
++      flex-wrap: wrap;
++      gap: 8px;
++      justify-content: center;
++      margin: 10px 0 4px;
++    }
++    .frame-thumb {
++      border: 2px solid #ccc;
++      border-radius: 6px;
++      padding: 2px;
++      cursor: pointer;
++      background: #fff;
++    }
++    .frame-thumb.selected {
++      border-color: #222;
++      box-shadow: 0 0 0 2px rgba(0,0,0,.35);
++    }
++    .frame-thumb canvas {
++      display: block;
++    }
++    .frame-name {
++      text-align: center;
++      font-size: 13px;
++      margin-bottom: 6px;
++      color: #333;
++    }
+diff --git a/web/pages/crossslate.html b/web/pages/crossslate.html
+new file mode 100644
+index 0000000..54dff49
+--- /dev/null
++++ b/web/pages/crossslate.html
+@@ -0,0 +1,33 @@
++<div id="message" class="message"></div>
++
++  <div class="card">
++    <h2>Tasks</h2>
++    <p class="hint">One task per line, up to 5 lines, 80 characters per line. CrossSlate shows these on the dashboard.</p>
++    <textarea id="tasks" rows="6" spellcheck="false" placeholder="Buy milk&#10;Call the bank"></textarea>
++    <div class="char-count" id="taskCount"></div>
++  </div>
++
++  <div class="card">
++    <h2>Pinned Note</h2>
++    <p class="hint">Short note pinned at the top of the CrossSlate dashboard (160 characters max).</p>
++    <input type="text" id="pinned" maxlength="35" />
++  </div>
++
++  <div class="save-container">
++    <button class="save-btn" id="saveBtn" onclick="saveCrossSlate()">Save</button>
++  </div>
++
++  <div class="card">
++    <h2>Doodle</h2>
++    <p class="hint">Draw with your mouse or finger, then send the sketch to the X4 as a monochrome image.</p>
++    <canvas id="doodleCanvas" width="456" height="270"></canvas>
++    <div class="frame-row" id="frameRow"></div>
++    <div class="frame-name" id="frameName">Marco: Ninguno</div>
++    <div class="doodle-actions">
++      <button class="save-btn" id="undoBtn">Undo</button>
++      <button class="save-btn" id="clearBtn">Clear</button>
++      <button class="save-btn" id="doodleSendBtn" onclick="sendDoodle()">Send to X4</button>
++      <button class="save-btn" id="doodleDeleteBtn" onclick="deleteDoodle()">Delete doodle from X4</button>
++    </div>
++    <div class="doodle-status" id="doodleStatus"></div>
++  </div>
+diff --git a/web/pages/crossslate.js b/web/pages/crossslate.js
+new file mode 100644
+index 0000000..25d3ceb
+--- /dev/null
++++ b/web/pages/crossslate.js
+@@ -0,0 +1,480 @@
++const MAX_TASKS = 5;
++  const MAX_TASK_LEN = 80;
++  const MAX_PINNED_LEN = 35;
++
++  function showMessage(text, isError) {
++    const msg = document.getElementById('message');
++    msg.textContent = text;
++    msg.className = 'message ' + (isError ? 'error' : 'success');
++    msg.style.display = 'block';
++    setTimeout(function() { msg.style.display = 'none'; }, 4000);
++  }
++
++  function updateCount() {
++    const lines = document.getElementById('tasks').value.split('\n');
++    const el = document.getElementById('taskCount');
++    if (lines.length > MAX_TASKS) {
++      el.textContent = lines.length + ' lines — too many (max ' + MAX_TASKS + ')';
++    } else {
++      const over = lines.filter(function(l) { return l.length > MAX_TASK_LEN; }).length;
++      el.textContent = lines.length + ' / ' + MAX_TASKS + ' lines' +
++        (over ? ' — ' + over + ' line(s) over ' + MAX_TASK_LEN + ' chars' : '');
++    }
++  }
++
++  async function loadCrossSlate() {
++    try {
++      const res = await fetch('/api/crossslate');
++      const data = await res.json();
++      document.getElementById('tasks').value = (data.tasks || []).join('\n');
++      document.getElementById('pinned').value = data.pinned || '';
++      updateCount();
++      updateDoodleStatus(!!data.doodle, !!data.doodleTmp);
++    } catch (e) {
++      showMessage('Failed to load CrossSlate data', true);
++    }
++  }
++
++  async function saveCrossSlate() {
++    const body = JSON.stringify({
++      tasks: document.getElementById('tasks').value,
++      pinned: document.getElementById('pinned').value
++    });
++    try {
++      const res = await fetch('/api/crossslate/save', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: body
++      });
++      const data = await res.json().catch(function() { return {}; });
++      if (res.ok) {
++        showMessage('Saved', false);
++        // Re-sync the textarea with what the device accepted (trimming etc.)
++        loadCrossSlate();
++      } else {
++        showMessage(data.error || 'Save failed', true);
++      }
++    } catch (e) {
++      showMessage('Save failed', true);
++    }
++  }
++
++  document.getElementById('tasks').addEventListener('input', updateCount);
++  loadCrossSlate();
++
++  // ---- Doodle canvas ----
++
++  const canvas = document.getElementById('doodleCanvas');
++  const ctx = canvas.getContext('2d', { willReadFrequently: true });
++
++  function clearDoodle() {
++    // Transparent background (not white): lets sendDoodle() composite the
++    // user's ink over the selected frame without white pixels erasing it.
++    ctx.clearRect(0, 0, canvas.width, canvas.height);
++  }
++  clearDoodle();
++
++  let drawing = false;
++  let lastX = 0, lastY = 0;
++
++  // Stroke history for undo: snapshot the bitmap after each completed stroke.
++  // 456x270 1-bit ~15.4KB per snapshot; cap at 10 (browser-side only).
++  const history = [];
++  const HISTORY_MAX = 10;
++
++  function snapshot() {
++    if (history.length >= HISTORY_MAX) history.shift();
++    history.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
++  }
++
++  function undoStroke() {
++    if (!history.length) return;
++    ctx.putImageData(history.pop(), 0, 0);
++  }
++
++
++  function canvasPos(ev) {
++    const r = canvas.getBoundingClientRect();
++    return {
++      x: (ev.clientX - r.left) * (canvas.width / r.width),
++      y: (ev.clientY - r.top) * (canvas.height / r.height)
++    };
++  }
++
++  canvas.addEventListener('pointerdown', function(ev) {
++    ev.preventDefault();
++    canvas.setPointerCapture(ev.pointerId);
++    drawing = true;
++    snapshot();
++    const p = canvasPos(ev);
++    lastX = p.x; lastY = p.y;
++    // Draw a dot for a simple tap.
++    ctx.beginPath();
++    ctx.arc(lastX, lastY, 1.5, 0, Math.PI * 2);
++    ctx.fillStyle = '#000';
++    ctx.fill();
++  });
++
++  canvas.addEventListener('pointermove', function(ev) {
++    if (!drawing) return;
++    ev.preventDefault();
++    const p = canvasPos(ev);
++    ctx.beginPath();
++    ctx.moveTo(lastX, lastY);
++    ctx.lineTo(p.x, p.y);
++    ctx.strokeStyle = '#000';
++    ctx.lineWidth = 3;
++    ctx.lineCap = 'round';
++    ctx.lineJoin = 'round';
++    ctx.stroke();
++    lastX = p.x; lastY = p.y;
++  });
++
++  function endStroke(ev) {
++    drawing = false;
++    if (ev && canvas.hasPointerCapture && canvas.hasPointerCapture(ev.pointerId)) {
++      canvas.releasePointerCapture(ev.pointerId);
++    }
++  }
++  document.getElementById('undoBtn').addEventListener('click', undoStroke);
++  document.getElementById('clearBtn').addEventListener('click', function() { history.length = 0; clearDoodle(); });
++
++  canvas.addEventListener('pointerup', endStroke);
++  canvas.addEventListener('pointercancel', endStroke);
++
++  // Build a 1-bit monochrome BMP (bottom-up rows, 4-byte aligned) entirely in
++  // the browser: ~28.5KB at 456x500, well within the 96KB body cap. The native
++  // resolution matches the X4 dashboard band so the device renders 1:1.
++
++  // ---- Decorative hand-drawn frames ----
++  // Each painter draws a rectangular frame inside a 2D context using normalized
++  // coordinates (0..1), so the same function renders both the 456x500 canvas
++  // and the tiny thumbnails. All strokes are solid black, thick enough to
++  // survive 1-bit e-ink thresholding.
++  const FRAMES = [
++    { name: 'None', paint: null },
++    { name: 'Sketch', paint: paintFrameSketch },
++    { name: 'Loops', paint: paintFrameLoops },
++    { name: 'Hatched', paint: paintFrameHatch },
++    { name: 'Curls', paint: paintFrameCurls },
++    { name: 'Ticks', paint: paintFrameTicks },
++    { name: 'Scallop', paint: paintFrameScallop },
++    { name: 'Doble', paint: paintFrameDouble }
++  ];
++  let selectedFrame = 0;
++
++  function framePaint(ctx2, w, h) {
++    const f = FRAMES[selectedFrame];
++    if (f && f.paint) f.paint(ctx2, w, h);
++  }
++
++  function paintFrameSketch(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    ctx2.lineWidth = 4;
++    ctx2.lineCap = 'round';
++    // 3 wobbly passes with jittered corners sticking out
++    const passes = [
++      { d: 0,  j: 6 },
++      { d: 5,  j: 9 },
++      { d: -4, j: 7 }
++    ];
++    for (const p of passes) {
++      const x0 = 14 + p.d + (Math.sin(w) > 0 ? 2 : -2);
++      const y0 = 14 + p.d;
++      const x1 = w - 14 + p.d;
++      const y1 = h - 14 + p.d;
++      ctx2.beginPath();
++      ctx2.moveTo(x0 - p.j, y0 + 10);
++      ctx2.lineTo(x0 + (x1-x0)*0.3 + 3, y0 - 2);
++      ctx2.lineTo(x0 + (x1-x0)*0.6 - 3, y0 + 3);
++      ctx2.lineTo(x1 + p.j, y0 + 8);
++      ctx2.lineTo(x1 + 2, y0 + (y1-y0)*0.5);
++      ctx2.lineTo(x1 - 3, y1 + 2);
++      ctx2.lineTo(x0 + (x1-x0)*0.4, y1 - 2);
++      ctx2.lineTo(x0 - p.j, y1 + 4);
++      ctx2.lineTo(x0 - 2, y0 + (y1-y0)*0.4);
++      ctx2.closePath();
++      ctx2.stroke();
++    }
++  }
++
++  function paintFrameLoops(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    ctx2.lineWidth = 4;
++    ctx2.lineCap = 'round';
++    const m = 26;              // margin
++    const r = 11;              // loop radius
++    const inset = m + r;
++    ctx2.beginPath();
++    // top: loops left->right
++    for (let x = inset; x < w - inset; x += r * 2) {
++      ctx2.moveTo(x, m);
++      ctx2.arc(x + r, m, r, Math.PI, 0, false);
++    }
++    // right: loops top->bottom
++    for (let y = inset; y < h - inset; y += r * 2) {
++      ctx2.moveTo(w - m, y);
++      ctx2.arc(w - m, y + r, r, -Math.PI/2, Math.PI/2, false);
++    }
++    // bottom: loops right->left
++    for (let x = w - inset; x > inset; x -= r * 2) {
++      ctx2.moveTo(x, h - m);
++      ctx2.arc(x - r, h - m, r, 0, Math.PI, false);
++    }
++    // left: loops bottom->top
++    for (let y = h - inset; y > inset; y -= r * 2) {
++      ctx2.moveTo(m, y);
++      ctx2.arc(m, y - r, r, Math.PI/2, -Math.PI/2, false);
++    }
++    ctx2.stroke();
++  }
++
++  function paintFrameHatch(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    // outer thick
++    ctx2.lineWidth = 7;
++    ctx2.strokeRect(12, 12, w - 24, h - 24);
++    // inner thin
++    ctx2.lineWidth = 3;
++    ctx2.strokeRect(30, 30, w - 60, h - 60);
++    // diagonal hatching between the two rectangles
++    ctx2.lineWidth = 2;
++    ctx2.save();
++    ctx2.beginPath();
++    // clip band between rects
++    ctx2.rect(0, 0, w, h);
++    ctx2.rect(30, 30, w - 60, h - 60);
++    ctx2.clip('evenodd');
++    ctx2.beginPath();
++    for (let d = -h; d < w + h; d += 14) {
++      ctx2.moveTo(d, 0);
++      ctx2.lineTo(d + h, h);
++    }
++    ctx2.stroke();
++    ctx2.restore();
++  }
++
++  function paintFrameCurls(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    ctx2.lineWidth = 4;
++    ctx2.strokeRect(16, 16, w - 32, h - 32);
++    // curls at each corner (bezier volutes)
++    const c = 34;
++    const corners = [
++      [16, 16, 1, 1], [w - 16, 16, -1, 1],
++      [16, h - 16, 1, -1], [w - 16, h - 16, -1, -1]
++    ];
++    for (const [cx, cy, sx, sy] of corners) {
++      ctx2.beginPath();
++      ctx2.moveTo(cx + sx * c, cy + sy * 6);
++      ctx2.bezierCurveTo(cx + sx * c * 0.5, cy + sy * c * 0.9,
++                         cx + sx * 6, cy + sy * c * 0.5,
++                         cx + sx * 8, cy + sy * c);
++      ctx2.stroke();
++      ctx2.beginPath();
++      ctx2.arc(cx + sx * c * 0.45, cy + sy * c * 0.45, 7, 0, Math.PI * 2);
++      ctx2.stroke();
++    }
++  }
++
++  function paintFrameTicks(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    ctx2.lineWidth = 3;
++    ctx2.strokeRect(22, 22, w - 44, h - 44);
++    // perpendicular ticks pointing outward every ~36px
++    ctx2.lineWidth = 4;
++    ctx2.beginPath();
++    for (let x = 34; x < w - 22; x += 36) {
++      ctx2.moveTo(x, 22); ctx2.lineTo(x, 10);
++      ctx2.moveTo(x, h - 22); ctx2.lineTo(x, h - 10);
++    }
++    for (let y = 34; y < h - 22; y += 36) {
++      ctx2.moveTo(22, y); ctx2.lineTo(10, y);
++      ctx2.moveTo(w - 22, y); ctx2.lineTo(w - 10, y);
++    }
++    ctx2.stroke();
++  }
++
++  function paintFrameScallop(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    ctx2.lineWidth = 4;
++    const r = 12;
++    const m = 24;
++    // scallops along each side: semicircles bulging outward
++    ctx2.beginPath();
++    for (let x = m; x + r * 2 <= w - m + 1; x += r * 2) {
++      ctx2.moveTo(x + r * 2, m);
++      ctx2.arc(x + r, m, r, 0, Math.PI, true);
++    }
++    for (let x = m; x + r * 2 <= w - m + 1; x += r * 2) {
++      ctx2.moveTo(x, h - m);
++      ctx2.arc(x + r, h - m, r, Math.PI, 0, true);
++    }
++    for (let y = m; y + r * 2 <= h - m + 1; y += r * 2) {
++      ctx2.moveTo(m, y + r * 2);
++      ctx2.arc(m, y + r, r, Math.PI/2, -Math.PI/2, true);
++    }
++    for (let y = m; y + r * 2 <= h - m + 1; y += r * 2) {
++      ctx2.moveTo(w - m, y);
++      ctx2.arc(w - m, y + r, r, -Math.PI/2, Math.PI/2, true);
++    }
++    ctx2.stroke();
++  }
++
++  function paintFrameDouble(ctx2, w, h) {
++    ctx2.strokeStyle = '#000';
++    ctx2.lineWidth = 5;
++    ctx2.strokeRect(14, 14, w - 28, h - 28);
++    ctx2.lineWidth = 2;
++    ctx2.strokeRect(26, 26, w - 52, h - 52);
++    // small circles at the 4 corners between both lines
++    const cs = [
++      [20, 20], [w - 20, 20], [20, h - 20], [w - 20, h - 20]
++    ];
++    for (const [cx, cy] of cs) {
++      ctx2.beginPath();
++      ctx2.arc(cx, cy, 8, 0, Math.PI * 2);
++      ctx2.stroke();
++    }
++  }
++
++  // Build thumbnails + selection behavior
++  function buildFramePicker() {
++    const row = document.getElementById('frameRow');
++    FRAMES.forEach(function(f, idx) {
++      const wrap = document.createElement('div');
++      wrap.className = 'frame-thumb' + (idx === selectedFrame ? ' selected' : '');
++      const tc = document.createElement('canvas');
++      tc.width = 90; tc.height = 98;
++      const tctx = tc.getContext('2d');
++      tctx.fillStyle = '#fff';
++      tctx.fillRect(0, 0, 90, 98);
++      tctx.strokeStyle = '#000';
++      // mini inner rect hint of the drawing area
++      tctx.lineWidth = 1;
++      tctx.strokeRect(24, 26, 42, 46);
++      if (f.paint) f.paint(tctx, 90, 98);
++      wrap.appendChild(tc);
++      wrap.addEventListener('click', function() {
++        selectedFrame = idx;
++        document.querySelectorAll('.frame-thumb').forEach(function(el) {
++          el.classList.remove('selected');
++        });
++        wrap.classList.add('selected');
++        document.getElementById('frameName').textContent = 'Frame: ' + f.name;
++      });
++      row.appendChild(wrap);
++    });
++  }
++  buildFramePicker();
++
++  function canvasToMonoBmp(srcCanvas) {
++    const w = srcCanvas.width, h = srcCanvas.height;
++    const rowBytes = Math.ceil(w / 32) * 4;  // 32 pixels per 4-byte row unit
++    const pixelBytes = rowBytes * h;
++    const fileSize = 14 + 40 + 8 + pixelBytes;  // file hdr + info hdr + palette
++
++    const buf = new ArrayBuffer(fileSize);
++    const dv = new DataView(buf);
++    const u8 = new Uint8Array(buf);
++
++    // BITMAPFILEHEADER (14 bytes)
++    u8[0] = 0x42; u8[1] = 0x4D;  // 'BM'
++    dv.setUint32(2, fileSize, true);
++    dv.setUint32(10, 14 + 40 + 8, true);  // pixel data offset
++
++    // BITMAPINFOHEADER (40 bytes)
++    dv.setUint32(14, 40, true);
++    dv.setInt32(18, w, true);
++    dv.setInt32(22, h, true);
++    dv.setUint16(26, 1, true);   // planes
++    dv.setUint16(28, 1, true);   // bpp = 1
++    dv.setUint32(30, 0, true);   // BI_RGB
++    dv.setUint32(34, pixelBytes, true);
++    dv.setUint32(46, 2, true);  // biClrUsed: the device decoder only loads the palette when colorsUsed > 0
++
++    // Palette: index 0 = white, index 1 = black
++    dv.setUint32(54, 0x00FFFFFF, true);
++    dv.setUint32(58, 0x00000000, true);
++
++    // Pixel data, bottom-up. In BMP 1-bit, a set bit = palette index 1 = black.
++    const img = srcCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
++    for (let y = 0; y < h; y++) {
++      const srcRow = (h - 1 - y) * w;          // bottom-up
++      const dstOff = 14 + 40 + 8 + y * rowBytes;
++      for (let x = 0; x < w; x++) {
++        const i = (srcRow + x) * 4;
++        // Luminance threshold: dark opaque pixels become ink (bit set).
++        // Transparent pixels (alpha < 128) count as white background.
++        const lum = 0.299 * img[i] + 0.587 * img[i + 1] + 0.114 * img[i + 2];
++        if (img[i + 3] >= 128 && lum < 128) {
++          u8[dstOff + (x >> 3)] |= (0x80 >> (x & 7));
++        }
++      }
++    }
++    return u8;
++  }
++
++  function updateDoodleStatus(exists, hasTmp) {
++    let text = 'Last doodle on X4: ' + (exists ? 'yes' : 'no');
++    if (hasTmp) text += ' | stale .tmp present (upload failed mid-way)';
++    const el = document.getElementById('doodleStatus');
++    el.textContent = text;
++    console.log('[crossslate]', text);
++  }
++
++  async function sendDoodle() {
++    let source = canvas;
++    if (selectedFrame !== 0) {
++      // Compose: frame first, then the user's drawing on top. The working
++      // canvas stays untouched so frames can be swapped freely.
++      const tmp = document.createElement('canvas');
++      tmp.width = canvas.width;
++      tmp.height = canvas.height;
++      const tctx = tmp.getContext('2d');
++      tctx.fillStyle = '#fff';
++      tctx.fillRect(0, 0, tmp.width, tmp.height);
++      framePaint(tctx, tmp.width, tmp.height);
++      tctx.drawImage(canvas, 0, 0);
++      source = tmp;
++    }
++    const bmp = canvasToMonoBmp(source);
++    // Multipart FormData mirrors the proven font-upload path: the firmware
++    // streams the file in small chunks via upload callbacks instead of
++    // materialising the whole 26KB body in one heap String (which on this
++    // RAM-tight ESP32-C3 contributed to a panic).
++    const blob = new Blob([bmp], { type: 'application/octet-stream' });
++    const formData = new FormData();
++    formData.append('file', blob, 'doodle.bmp');
++    try {
++      const res = await fetch('/api/crossslate/doodle', {
++        method: 'POST',
++        body: formData
++      });
++      console.log('[crossslate] send status', res.status);
++      const data = await res.json().catch(function() { return {}; });
++      if (res.ok) {
++        showMessage('Doodle sent to X4', false);
++        updateDoodleStatus(true);
++      } else {
++        showMessage(data.error || 'Send failed', true);
++      }
++    } catch (e) {
++      showMessage('Send failed', true);
++    }
++  }
++
++  async function deleteDoodle() {
++    try {
++      const res = await fetch('/api/crossslate/doodle/delete', { method: 'POST' });
++      const data = await res.json().catch(function() { return {}; });
++      if (res.ok) {
++        showMessage('Doodle deleted from X4', false);
++        updateDoodleStatus(false);
++      } else {
++        showMessage(data.error || 'Delete failed', true);
++      }
++    } catch (e) {
++      showMessage('Delete failed', true);
++    }
++  }
+diff --git a/web/templates/base.html b/web/templates/base.html
+index 7550197..d09f82b 100644
+--- a/web/templates/base.html
++++ b/web/templates/base.html
+@@ -18,6 +18,7 @@
+     <a href="/files"{{ cls_files }}>File Manager</a>
+     <a href="/settings"{{ cls_settings }}>Settings</a>
+     <a href="/fonts"{{ cls_fonts }}>Fonts</a>
++    <a href="/crossslate"{{ cls_crossslate }}>CrossSlate</a>
+   </div>
+ 
+ {{ body }}
