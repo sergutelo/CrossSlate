@@ -18,6 +18,7 @@
 #include <HalDisplay.h>
 #include <EpdFont.h>
 #include <EpdFontFamily.h>
+#include <Preferences.h>
 #include <SDCardManager.h>
 #include <ctime>
 
@@ -429,6 +430,39 @@ void drawDashboard(GfxRenderer& renderer, HalGPIO& gpio) {
 static uint32_t g_todayEpochDay = 0;
 static uint32_t todayEpochDayCached() { return g_todayEpochDay; }
 
+static ReadingDisplayCache g_readingDisplayCache;
+static bool g_readingDisplayCacheLoaded = false;
+
+static void loadReadingDisplayCache() {
+  if (g_readingDisplayCacheLoaded) return;
+  Preferences prefs;
+  if (prefs.begin("reading_disp", true)) {
+    g_readingDisplayCache.initialized = prefs.getBool("init", false);
+    g_readingDisplayCache.lastKnownDay = prefs.getUInt("last_day", 0);
+    g_readingDisplayCache.lastTotalSeconds = prefs.getUInt("last_sec", 0);
+    g_readingDisplayCache.lastTotalPages = prefs.getUInt("last_pg", 0);
+    g_readingDisplayCache.inferredReadDay = prefs.getUInt("read_day", 0);
+    prefs.end();
+  }
+  g_readingDisplayCacheLoaded = true;
+}
+
+static void saveReadingDisplayCacheIfChanged(const ReadingDisplayCache& before) {
+  if (before.initialized == g_readingDisplayCache.initialized &&
+      before.lastKnownDay == g_readingDisplayCache.lastKnownDay &&
+      before.lastTotalSeconds == g_readingDisplayCache.lastTotalSeconds &&
+      before.lastTotalPages == g_readingDisplayCache.lastTotalPages &&
+      before.inferredReadDay == g_readingDisplayCache.inferredReadDay) return;
+  Preferences prefs;
+  if (!prefs.begin("reading_disp", false)) return;
+  prefs.putBool("init", g_readingDisplayCache.initialized);
+  prefs.putUInt("last_day", g_readingDisplayCache.lastKnownDay);
+  prefs.putUInt("last_sec", g_readingDisplayCache.lastTotalSeconds);
+  prefs.putUInt("last_pg", g_readingDisplayCache.lastTotalPages);
+  prefs.putUInt("read_day", g_readingDisplayCache.inferredReadDay);
+  prefs.end();
+}
+
 void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
   renderer.clearScreen();
   const int sw = renderer.getScreenWidth();
@@ -440,16 +474,33 @@ void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
   drawBattery(renderer, gpio);
   clippedLine(renderer, 8, 36, sw - 8, 36, tc);
 
-  const ReadingSnapshot snap = readingSnapshotLoad();
+  ReadingSnapshot snap = readingSnapshotLoad();
 
-  // Today from the RTC (NTP-synced on boot); falls back to the anchor day.
-  uint32_t today = snap.anchorDay + RS_HISTORY_DAYS - 1;
+  // Prefer the live NTP day. Offline, retain the last known connected day and
+  // infer reading from cumulative CrossInk counter deltas.
+  uint32_t liveToday = 0;
   const time_t now = time(nullptr);
   if (now > 1700000000) {
-    struct tm utc{};
-    gmtime_r(&now, &utc);
-    today = readingEpochDayFromYMD(utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday);
+    // configTzTime configures Europe/Madrid; use its civil day rather than UTC
+    // so a late-evening reading is never attributed to the previous day.
+    struct tm local{};
+    localtime_r(&now, &local);
+    liveToday = readingEpochDayFromYMD(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
   }
+  // The cached Open-Meteo timestamp is the last date known to be valid. It
+  // seeds the offline reading cache after a reboot or firmware-slot switch.
+  if (liveToday == 0) {
+    const WeatherCache& cachedWeather = dashboardGetData().weather;
+    int year = 0, month = 0, day = 0;
+    if (cachedWeather.valid &&
+        sscanf(cachedWeather.updated, "%d-%d-%d", &year, &month, &day) == 3) {
+      liveToday = readingEpochDayFromYMD(year, month, day);
+    }
+  }
+  loadReadingDisplayCache();
+  const ReadingDisplayCache cacheBefore = g_readingDisplayCache;
+  const uint32_t today = readingPrepareForDisplay(snap, liveToday, g_readingDisplayCache);
+  saveReadingDisplayCacheIfChanged(cacheBefore);
   g_todayEpochDay = today;
 
   char buf[64];
@@ -460,47 +511,58 @@ void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
   renderer.drawRect(12 + cardW + 12, cardY, cardW, cardH, tc);
   drawClippedText(renderer, FONT_UI, 12 + 12, cardY + 10, "Racha actual", cardW - 24, tc);
   const uint16_t cur = readingCurrentStreak(snap, today);
-  snprintf(buf, sizeof(buf), "%u dias", static_cast<unsigned>(cur));
+  const char* curUnit = (cur == 1) ? "d\xC3\xAD" "a" : "d\xC3\xAD" "as";
+  snprintf(buf, sizeof(buf), "%u %s", static_cast<unsigned>(cur), curUnit);
   drawClippedText(renderer, FONT_LARGE, 12 + 12, cardY + 34, buf, cardW - 24, tc, EpdFontFamily::BOLD);
-  drawClippedText(renderer, FONT_UI, 24 + cardW + 12, cardY + 10, "Record", cardW - 24, tc);
+  drawClippedText(renderer, FONT_UI, 24 + cardW + 12, cardY + 10, "R\xC3\xA9" "cord", cardW - 24, tc);
   const uint16_t best = readingLongestStreak(snap);
-  snprintf(buf, sizeof(buf), "%u dias", static_cast<unsigned>(best));
+  const char* bestUnit = (best == 1) ? "d\xC3\xAD" "a" : "d\xC3\xAD" "as";
+  snprintf(buf, sizeof(buf), "%u %s", static_cast<unsigned>(best), bestUnit);
   drawClippedText(renderer, FONT_LARGE, 24 + cardW + 12, cardY + 34, buf, cardW - 24, tc, EpdFontFamily::BOLD);
 
-  // Heatmap: 14 weeks x 7 rows
+  // Heatmap + legend: anchor the grid left and use the reclaimed right side
+  // as a self-contained key. This makes the 1-bit states understandable at a
+  // glance without widening the cells or stealing vertical space.
   const int weeks = 14, cell = 14, gap = 9;
   const int gridW = weeks * (cell + gap) - gap;
-  const int gridX = (sw - gridW) / 2;  // centered; labels sit in the left margin
+  const int gridX = 42;
   const int gridY = cardY + cardH + 52;  // extra clearance under the label
-  drawClippedText(renderer, FONT_UI, 12, cardY + cardH + 14, "Ultimas 14 semanas", sw - 24, tc);
+  const int legendX = gridX + gridW + 38;
+  const int legendW = sw - legendX - 12;
+  drawClippedText(renderer, FONT_UI, 12, cardY + cardH + 14,
+                  "\xC3\x9A" "ltimas 14 semanas", sw - 24, tc);
 
-  const uint32_t windowDays = weeks * 7;
-  // First day of the window, aligned so its column starts on Monday.
-  const uint32_t startDay = today - windowDays + 1;
-  const int startDow = static_cast<int>((startDay + 3) % 7);  // 1970-01-01 = Thursday
-  // Column 0 covers the first (7 - startDow) days partially; simplest correct
-  // approach: iterate absolute days and place by (week, dow) computed from date.
+  // Start on Monday 13 weeks before the current week. The current week is
+  // always column 13, so today's marker can never fall outside the grid.
+  const uint32_t todayDow = (today + 3u) % 7u;
+  const uint32_t startDay = today - todayDow - static_cast<uint32_t>(weeks - 1) * 7u;
   for (uint32_t d = startDay; d <= today; ++d) {
-    const int dow = static_cast<int>((d + 3) % 7);  // 0=Mon..6=Sun
-    const int weekCol = static_cast<int>((d - startDay + startDow) / 7);
-    if (weekCol >= weeks) continue;
+    int weekCol = -1;
+    int dow = -1;
+    if (!readingHeatmapCell(d, today, weeks, weekCol, dow)) continue;
     const int x = gridX + weekCol * (cell + gap);
     const int y = gridY + dow * (cell + gap);
     const bool read = snap.dayBit(d);
     const bool isToday = (d == today);
+    // Today is always a hollow square with a thick X. It intentionally takes
+    // precedence over the reading state: the last cell is the date marker, not
+    // another activity glyph. The first day of each month keeps its center dot.
     if (isToday) {
-      renderer.fillRect(x, y, cell, cell, tc);
-    } else if (read) {
       renderer.drawRect(x, y, cell, cell, tc);
-      renderer.fillRect(x + 3, y + 3, cell - 6, cell - 6, tc);
+      for (int k = 0; k < cell - 4; k += 2) {
+        renderer.fillRect(x + 2 + k, y + 2 + k, 2, 2, tc);
+        renderer.fillRect(x + cell - 4 - k, y + 2 + k, 2, 2, tc);
+      }
     } else {
       renderer.drawRect(x, y, cell, cell, tc);
+      if (read) renderer.fillRect(x + 3, y + 3, cell - 6, cell - 6, tc);
     }
-    // First day of a month: center dot as a calendar tick
+    // First day of a month: center dot as a calendar tick. Today uses its X
+    // instead, even when it happens to be the first of the month.
     const time_t dt = static_cast<time_t>(d) * 86400u;
     struct tm dm{};
     gmtime_r(&dt, &dm);
-    if (dm.tm_mday == 1) {
+    if (!isToday && dm.tm_mday == 1) {
       renderer.fillRect(x + cell / 2 - 2, y + cell / 2 - 2, 4, 4, tc);
     }
   }
@@ -519,11 +581,34 @@ void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
     }
   }
 
+  // Legend on the reclaimed right side. Match each exact visual state used in
+  // the grid so the labels remain true even in monochrome/dark mode.
+  {
+    // Three legend entries only. Today's X is self-evident because it is the
+    // final cell in the rightmost column, so it deliberately has no legend.
+    const int sample = 12;
+    const int lineGap = 38;
+    const int legendY = gridY + 4;
+    renderer.drawRect(legendX, legendY + 4, sample, sample, tc);
+    drawClippedText(renderer, FONT_SMALL, legendX + sample + 9, legendY,
+                    "Sin", legendW - sample - 9, tc);
+    drawClippedText(renderer, FONT_SMALL, legendX + sample + 9, legendY + 12,
+                    "leer", legendW - sample - 9, tc);
+    renderer.drawRect(legendX, legendY + lineGap + 4, sample, sample, tc);
+    renderer.fillRect(legendX + 3, legendY + lineGap + 7, sample - 6, sample - 6, tc);
+    drawClippedText(renderer, FONT_SMALL, legendX + sample + 9, legendY + lineGap + 6,
+                    "Le\xC3\xAD" "do", legendW - sample - 9, tc);
+    renderer.drawRect(legendX, legendY + 2 * lineGap + 4, sample, sample, tc);
+    renderer.fillRect(legendX + sample / 2 - 2, legendY + 2 * lineGap + sample / 2 + 2, 4, 4, tc);
+    drawClippedText(renderer, FONT_SMALL, legendX + sample + 9, legendY + 2 * lineGap + 6,
+                    "D\xC3\xAD" "a1", legendW - sample - 9, tc);
+  }
+
   // Totals under the grid
   int ty = gridY + 7 * (cell + gap) + 18;
   const uint32_t hours = snap.totalReadingSeconds / 3600u;
   const uint32_t mins = (snap.totalReadingSeconds % 3600u) / 60u;
-  snprintf(buf, sizeof(buf), "Total: %uh %um   \xC2\xB7   %u paginas", static_cast<unsigned>(hours),
+  snprintf(buf, sizeof(buf), "Total: %uh %um   \xC2\xB7   %u p\xC3\xA1" "ginas", static_cast<unsigned>(hours),
            static_cast<unsigned>(mins), static_cast<unsigned>(snap.totalPagesTurned));
   drawClippedText(renderer, FONT_UI, 12, ty, buf, sw - 24, tc);
   ty += 34;
@@ -538,7 +623,7 @@ void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
   switch (pomodoro::state()) {
     case pomodoro::State::Running: stateLabel = "Enter: pausa"; break;
     case pomodoro::State::Paused: stateLabel = "Enter: seguir"; break;
-    case pomodoro::State::Finished: stateLabel = "\xC2\xA1Listo! Enter: reset"; break;
+    case pomodoro::State::Finished: stateLabel = "\xC2\xA1" "Listo! Enter: reset"; break;
     default: break;
   }
   drawClippedText(renderer, FONT_UI, 24, ty + 70, stateLabel, sw - 48, tc);
@@ -557,7 +642,7 @@ void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
     const int petTop = ty + 118;
     const int petH = sh - 30 - petTop - 26;  // leave room for caption + footer
     if (petH > 90) {
-      drawClippedText(renderer, FONT_UI, 12, petTop, "Crossi hoy est\xC3\xA1:", sw - 24, tc, EpdFontFamily::BOLD);
+      drawClippedText(renderer, FONT_UI, 12, petTop, "Crossi hoy est\xC3\xA1" ":", sw - 24, tc, EpdFontFamily::BOLD);
 
       // Mood: read today -> happy; missed 2+ days -> sleepy; else neutral.
       const uint32_t today = todayEpochDayCached();
@@ -646,15 +731,16 @@ void drawReadingPage(GfxRenderer& renderer, HalGPIO& gpio) {
       }
 
       // Caption
-      const char* caption = (mood == 0) ? "\xC2\xA1Feliz! \xC2\xA1Has le\xC3\ADdo hoy."
-                          : (mood == 2) ? "Dormido... \xC2\xBFy la lectura?"
-                          : "Tranquilo. A\xC3\BAn hay tiempo.";
+      const char* caption = (mood == 0) ? "\xC2\xA1" "Feliz! \xC2\xA1" "Has le\xC3\xAD" "do hoy."
+                          : (mood == 2) ? "Dormido... \xC2\xBF" "y la lectura?"
+                          : "Tranquilo. A\xC3\xBA" "n hay tiempo.";
       drawClippedText(renderer, FONT_UI, 12, petTop + petH - 2, caption, sw - 24, tc);
     }
   }
 
   clippedLine(renderer, 8, sh - 30, sw - 8, sh - 30, tc);
-  drawClippedText(renderer, FONT_SMALL, 12, sh - 23, "Atr\xC3\xA1s: Men\xC3\xBA  Lados: \xC2\xB11min  Der 2s: Reset", sw - 24, tc);
+  drawClippedText(renderer, FONT_SMALL, 12, sh - 23,
+                  "Atr\xC3\xA1" "s: Men\xC3\xBA  Lados: \xC2\xB1" "1min  Der 2s: Reset", sw - 24, tc);
 
   // Running countdown: fast refresh avoids the long black/white flash of a
   // full waveform; the 1-bit ghosting it leaves is cleared on the next full

@@ -3,6 +3,7 @@
 #include "file_manager.h"
 #include "sd_backup.h"
 #include "crossink_wifi_import.h"
+#include "wifi_connect_policy.h"
 #include "ble_keyboard.h"
 
 #include <Arduino.h>
@@ -774,6 +775,26 @@ bool isWifiSyncActive() {
   return syncActive;
 }
 
+struct WeatherConnectContext {
+  Preferences* prefs;
+};
+
+static bool tryWeatherCredential(int index, uint32_t timeoutMs, void* rawContext) {
+  auto* context = static_cast<WeatherConnectContext*>(rawContext);
+  char ssidKey[16], passKey[16], ssid[33] = {0};
+  char password[MAX_PASSWORD_LEN + 1] = {0};
+  snprintf(ssidKey, sizeof(ssidKey), "wifi_ssid_%d", index);
+  snprintf(passKey, sizeof(passKey), "wifi_pass_%d", index);
+  if (context->prefs->getString(ssidKey, ssid, sizeof(ssid)) == 0) return false;
+  context->prefs->getString(passKey, password, sizeof(password));
+
+  WiFi.disconnect(true);
+  WiFi.begin(ssid, password);
+  const unsigned long attemptStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - attemptStart < timeoutMs) delay(100);
+  return WiFi.status() == WL_CONNECTED;
+}
+
 bool wifiWeatherConnectSaved(uint32_t timeoutMs, char* status, size_t statusSize) {
   if (status && statusSize) status[0] = '\0';
   if (syncActive) {
@@ -812,19 +833,10 @@ bool wifiWeatherConnectSaved(uint32_t timeoutMs, char* status, size_t statusSize
   }
 
   WiFi.mode(WIFI_STA);
-  const unsigned long deadline = millis() + timeoutMs;
-  bool connected = false;
-  for (int i = 0; i < count && i < MAX_SAVED_NETWORKS && millis() < deadline && !connected; ++i) {
-    char ssidKey[16], passKey[16], ssid[33], password[MAX_PASSWORD_LEN + 1];
-    snprintf(ssidKey, sizeof(ssidKey), "wifi_ssid_%d", i);
-    snprintf(passKey, sizeof(passKey), "wifi_pass_%d", i);
-    if (weatherPrefs.getString(ssidKey, ssid, sizeof(ssid)) == 0) continue;
-    weatherPrefs.getString(passKey, password, sizeof(password));
-    WiFi.disconnect(true);
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) delay(100);
-    connected = WiFi.status() == WL_CONNECTED;
-  }
+  const int attempts = count < MAX_SAVED_NETWORKS ? count : MAX_SAVED_NETWORKS;
+  WeatherConnectContext connectContext{&weatherPrefs};
+  const bool connected =
+      wifiTrySavedNetworks(attempts, timeoutMs, tryWeatherCredential, &connectContext);
   weatherPrefs.end();
   if (!connected) {
     wifiWeatherDisconnect();

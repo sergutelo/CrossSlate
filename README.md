@@ -8,6 +8,18 @@ It lives in the second OTA slot of the X4 alongside **CrossInk** (the reader fir
 
 ---
 
+## Latest release — v39
+
+The current Xteink X4 release is **CrossSlate v39**. It includes the complete reading-statistics and Utilities page work:
+
+- A 14-week heatmap anchored to Monday, with a stable Europe/Madrid day calculation and offline reading inference from CrossInk cumulative counters.
+- A compact, legible monochrome legend: empty cell = unread, inset fill = read, and center dot = first day of a month (`Día1`).
+- Today is always the final cell in the rightmost column, rendered as an outlined square with a thick X. It has no legend entry and takes precedence if today is also the first day of a month.
+- Correct UTF-8 Spanish UI rendering for accents and punctuation on the Utilities page.
+- Imported Wi-Fi credentials now try each saved SSID with an independent connection deadline.
+
+The matching reader-side companion binary is **CrossInk v14** (`CrossInk-X4-v14-en.bin`). It exposes the CrossSlate entry point and the shared SD-backed CrossSlate web page.
+
 ## Credits
 
 This project **would not exist without**:
@@ -78,9 +90,9 @@ You can never end up half-flashed: the running slot never overwrites itself.
 
 | File | What it is |
 |---|---|
-| `CrossInk-X4-v13-landscape-doodle.bin` | CrossInk with the CrossSlate tab in its web server (tasks + note + doodle with frames) |
-| `CrossSlate-X4-v33-final.bin` | Full CrossSlate: dashboard, weather, heatmap, pomodoro, Crossi |
-| `crossink-crossslate-dual-16MB-v33.bin` | Both together, complete 16 MB image for from-scratch flashing |
+| `CrossInk-X4-v14-en.bin` | Current CrossInk companion binary with the CrossSlate web-tab integration |
+| `CrossSlate-X4-v39-today-x.bin` | Current CrossSlate: offline-aware heatmap, Wi-Fi import fixes, Pomodoro, and Crossi |
+| `crossink-crossslate-dual-16MB-v33.bin` | Earlier complete 16 MB dual-image baseline for from-scratch flashing |
 
 ---
 

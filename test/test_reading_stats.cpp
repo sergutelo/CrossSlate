@@ -6,11 +6,6 @@
 
 namespace {
 
-uint32_t readLe32(const uint8_t* d, size_t off) {
-  return static_cast<uint32_t>(d[off]) | (static_cast<uint32_t>(d[off + 1]) << 8) |
-         (static_cast<uint32_t>(d[off + 2]) << 16) | (static_cast<uint32_t>(d[off + 3]) << 24);
-}
-
 void writeLe32(uint8_t* d, size_t off, uint32_t v) {
   d[off] = v & 0xFF;
   d[off + 1] = (v >> 8) & 0xFF;
@@ -99,6 +94,51 @@ int main() {
   // Corrupt: truncated
   ReadingSnapshot bad2 = readingSnapshotParse(file, len - 1);
   assert(!bad2.valid);
+
+  // Heatmap regression: today must always land in the final (13th) column,
+  // regardless of its weekday. The old arithmetic silently dropped today for
+  // six out of seven weekdays.
+  for (uint32_t testToday = today; testToday < today + 7; ++testToday) {
+    int col = -1;
+    int row = -1;
+    assert(readingHeatmapCell(testToday, testToday, 14, col, row));
+    assert(col == 13);
+    assert(row == static_cast<int>((testToday + 3) % 7));
+  }
+
+  // Bootstrap after an OTA: with a valid current day but no earlier CrossSlate
+  // sample, retain the observed reading rather than displaying Crossi asleep.
+  ReadingDisplayCache firstVisit{};
+  ReadingSnapshot firstObserved = snap3;
+  assert(readingPrepareForDisplay(firstObserved, today, firstVisit) == today);
+  assert(firstObserved.dayBit(today));
+
+  // Offline display cache: once baseline exists, infer a reading day when
+  // cumulative totals advance without a live clock. Keep the inferred bit on
+  // subsequent redraws.
+  ReadingDisplayCache cache{};
+  ReadingSnapshot baseline = snap3;
+  const uint32_t cachedToday = readingPrepareForDisplay(baseline, today, cache);
+  assert(cachedToday == today);
+  assert(baseline.dayBit(today));  // first observation is the bootstrap overlay
+
+  // Move to a new cached day with no activity: the prior overlay remains on
+  // its original date, but the new date is not falsely marked.
+  const uint32_t nextDay = today + 1;
+  ReadingSnapshot quietNextDay = snap3;
+  assert(readingPrepareForDisplay(quietNextDay, nextDay, cache) == nextDay);
+  assert(!quietNextDay.dayBit(nextDay));
+
+  ReadingSnapshot afterOfflineReading = snap3;
+  afterOfflineReading.totalReadingSeconds += 600;
+  afterOfflineReading.totalPagesTurned += 12;
+  assert(readingPrepareForDisplay(afterOfflineReading, 0, cache) == nextDay);
+  assert(afterOfflineReading.dayBit(nextDay));
+  assert(afterOfflineReading.dayBit(today - 2));  // window shift preserves history
+
+  ReadingSnapshot redraw = snap3;
+  assert(readingPrepareForDisplay(redraw, 0, cache) == nextDay);
+  assert(redraw.dayBit(nextDay));
 
   printf("test_reading_stats: all assertions passed\n");
   return 0;

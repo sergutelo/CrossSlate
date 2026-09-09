@@ -42,6 +42,41 @@ struct ReadingSnapshot {
     if (idx >= RS_HISTORY_DAYS) return false;
     return (bits[idx / 8] & static_cast<uint8_t>(1u << (idx % 8))) != 0;
   }
+
+  // Mark a day in a display-only snapshot. If CrossInk's history window is
+  // stale because it was offline, advance this in-memory window just enough to
+  // include the requested newer day. The source stats file is never modified.
+  bool setDayBit(uint32_t dayIndex) {
+    if (anchorDay == 0 || dayIndex < anchorDay) return false;
+    const uint32_t lastDay = anchorDay + static_cast<uint32_t>(RS_HISTORY_DAYS - 1);
+    if (dayIndex > lastDay) {
+      const uint32_t shift = dayIndex - lastDay;
+      uint8_t oldBits[RS_HISTORY_BYTES];
+      for (size_t i = 0; i < RS_HISTORY_BYTES; ++i) oldBits[i] = bits[i];
+      for (size_t i = 0; i < RS_HISTORY_BYTES; ++i) bits[i] = 0;
+      if (shift < RS_HISTORY_DAYS) {
+        for (size_t oldIndex = shift; oldIndex < RS_HISTORY_DAYS; ++oldIndex) {
+          if (oldBits[oldIndex / 8] & static_cast<uint8_t>(1u << (oldIndex % 8))) {
+            const size_t newIndex = oldIndex - shift;
+            bits[newIndex / 8] |= static_cast<uint8_t>(1u << (newIndex % 8));
+          }
+        }
+      }
+      anchorDay += shift;
+    }
+    const uint32_t idx = dayIndex - anchorDay;
+    if (idx >= RS_HISTORY_DAYS) return false;
+    bits[idx / 8] |= static_cast<uint8_t>(1u << (idx % 8));
+    return true;
+  }
+};
+
+struct ReadingDisplayCache {
+  bool initialized = false;
+  uint32_t lastKnownDay = 0;
+  uint32_t lastTotalSeconds = 0;
+  uint32_t lastTotalPages = 0;
+  uint32_t inferredReadDay = 0;
 };
 
 // Pure parse from an in-memory buffer (host-testable).
@@ -62,3 +97,13 @@ uint16_t readingLongestStreak(const ReadingSnapshot& snap);
 // Epoch-day index for a UTC date (days since 1970-01-01). Proleptic
 // Gregorian, no external libs.
 uint32_t readingEpochDayFromYMD(int year, int month, int day);
+
+// Maps an absolute day into a Monday-first heatmap ending with the current
+// week. Today always belongs to the final column.
+bool readingHeatmapCell(uint32_t day, uint32_t today, int weeks, int& column, int& row);
+
+// Resolves today from a live day or the last cached connected day. When the
+// CrossInk totals advance while offline, overlays that cached day as read and
+// remembers it across redraws. The source stats file is never modified.
+uint32_t readingPrepareForDisplay(ReadingSnapshot& snap, uint32_t liveTodayDay,
+                                  ReadingDisplayCache& cache);

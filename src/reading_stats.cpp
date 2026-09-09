@@ -36,6 +36,47 @@ uint32_t readingEpochDayFromYMD(int year, int month, int day) {
   return daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
 }
 
+bool readingHeatmapCell(uint32_t day, uint32_t today, int weeks, int& column, int& row) {
+  if (weeks <= 0 || day > today) return false;
+  const uint32_t todayDow = (today + 3u) % 7u;  // 1970-01-01 = Thursday
+  const uint32_t startMonday = today - todayDow - static_cast<uint32_t>(weeks - 1) * 7u;
+  if (day < startMonday) return false;
+  column = static_cast<int>((day - startMonday) / 7u);
+  row = static_cast<int>((day + 3u) % 7u);
+  return column >= 0 && column < weeks;
+}
+
+uint32_t readingPrepareForDisplay(ReadingSnapshot& snap, uint32_t liveTodayDay,
+                                  ReadingDisplayCache& cache) {
+  if (liveTodayDay != 0) cache.lastKnownDay = liveTodayDay;
+  uint32_t today = cache.lastKnownDay;
+  if (today == 0 && snap.valid && snap.anchorDay != 0) {
+    today = snap.anchorDay + RS_HISTORY_DAYS - 1;
+  }
+
+  if (snap.valid) {
+    const bool totalsAdvanced = snap.totalReadingSeconds > cache.lastTotalSeconds ||
+                                snap.totalPagesTurned > cache.lastTotalPages;
+    if (today != 0 && cache.initialized && totalsAdvanced) {
+      // Normal path: CrossInk persisted new reading while CrossSlate was away.
+      cache.inferredReadDay = today;
+    } else if (today != 0 && !cache.initialized &&
+               (snap.totalReadingSeconds != 0 || snap.totalPagesTurned != 0)) {
+      // Bootstrap path: after an OTA there is no previous CrossSlate sample to
+      // compare against. With a valid clock, prefer preserving a reading that
+      // happened before this first visit over falsely showing Crossi asleep.
+      // This overlay exists only for this one known day; later redraws use real
+      // counter deltas and never rewrite CrossInk's source file.
+      cache.inferredReadDay = today;
+    }
+    if (cache.inferredReadDay != 0) snap.setDayBit(cache.inferredReadDay);
+    cache.lastTotalSeconds = snap.totalReadingSeconds;
+    cache.lastTotalPages = snap.totalPagesTurned;
+    cache.initialized = true;
+  }
+  return today;
+}
+
 ReadingSnapshot readingSnapshotParse(const uint8_t* data, size_t len) {
   ReadingSnapshot snap;
   if (len != RS_FILE_SIZE || data[0] != RS_VERSION) return snap;
